@@ -1,0 +1,19 @@
+[package]
+name = "blink-alloc"
+version = "0.0.0"
+edition = "2018"
+authors = ["Zakarum <zaq.dev@icloud.com>"]
+license = "MIT OR Apache-2.0"
+documentation = "https://docs.rs/blink-alloc"
+homepage = "https://github.com/zakarumych/blink-alloc"
+repository = "https://github.com/zakarumych/blink-alloc"
+readme = "README.md"
+description = "Fast, concurrent, arena-based allocator with drop support"
+keywords = ["allocator", "arena", "concurrent", "drop"]
+
+
+[features]
+# nightly = []
+alloc = []
+oom_handling = []
+default = ["alloc", "oom_handling"]
