@@ -1,7 +1,4 @@
-pub use self::inner::{AllocError, Allocator};
-
-#[cfg(feature = "alloc")]
-pub use self::inner::Global;
+pub use self::inner::{AllocError, Allocator, Global};
 
 #[cfg(not(feature = "nightly"))]
 mod inner {
@@ -16,7 +13,7 @@ mod inner {
 
     /// Mimics `core::alloc::Allocator` trait.
     pub unsafe trait Allocator {
-        fn allocate(&self, layout: Layout) -> Result<NonNull<u8>, AllocError>;
+        fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError>;
         unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout);
     }
 
@@ -25,7 +22,7 @@ mod inner {
         A: Allocator,
     {
         #[inline(always)]
-        fn allocate(&self, layout: Layout) -> Result<NonNull<u8>, AllocError> {
+        fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
             A::allocate(*self, layout)
         }
 
@@ -43,8 +40,21 @@ mod inner {
     #[cfg(feature = "alloc")]
     unsafe impl Allocator for Global {
         #[inline]
-        fn allocate(&self, layout: Layout) -> Result<NonNull<u8>, AllocError> {
-            unsafe { NonNull::new(alloc(layout)).ok_or(AllocError) }
+        fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+            let ptr = if layout.size() == 0 {
+                NonNull::dangling()
+            } else {
+                // Safety:
+                // layout size is not 0.
+                unsafe { NonNull::new(alloc(layout)).ok_or(AllocError)? }
+            };
+
+            let slice = core::ptr::slice_from_raw_parts_mut(ptr.as_ptr(), layout.size());
+
+            // Safety:
+            // Slice pointer is made from NonNull pointer.
+            // It is either dangling with length 0 or a pointer to successfully allocated memory block.
+            Ok(unsafe { NonNull::new_unchecked(slice) })
         }
 
         #[inline]
@@ -74,7 +84,8 @@ mod inner {
 pub unsafe trait BlinkAllocator: Allocator {
     /// Resets allocator potentially invalidating all allocations
     /// made from this instance.
-    /// This is no-op if allocator instance is [`Clone`][core::clone::Clone].
+    /// This is no-op if allocator instance is [`Clone`][core::clone::Clone]
+    /// and does not invalidate any allocations.
     unsafe fn reset(&mut self);
 }
 

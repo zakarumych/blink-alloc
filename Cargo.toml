@@ -13,7 +13,11 @@ keywords = ["allocator", "arena", "concurrent", "drop"]
 
 
 [features]
-# nightly = []
+nightly = []
 alloc = []
 oom_handling = []
 default = ["alloc", "oom_handling"]
+
+[dependencies]
+parking_lot = "0.12"
+sptr = "0.3"

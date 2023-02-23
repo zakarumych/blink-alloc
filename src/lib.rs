@@ -72,21 +72,22 @@
 //!
 
 #![no_std]
-// #![cfg_attr(feature = "nightly", feature(allocator_api, error_in_core))]
+#![cfg_attr(feature = "nightly", feature(allocator_api, error_in_core))]
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
-mod align_up;
+mod align;
 pub mod api;
 mod blink;
 mod drop_list;
-mod st;
+mod local;
+mod sync;
 
 #[cfg(all(feature = "oom_handling", not(no_global_oom_handling)))]
 mod oom;
 
-pub use self::{blink::Blink, st::BlinkAlloc};
+pub use self::{blink::Blink, local::BlinkAlloc, sync::SyncBlinkAlloc};
 
 #[cold]
 fn cold() {}

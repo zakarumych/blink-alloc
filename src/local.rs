@@ -1,4 +1,5 @@
-//! This module provides single-threaded blink allocator.
+//! This module provides multi-threaded blink allocator\
+//! with sync resets.
 
 use core::{
     alloc::Layout,
@@ -9,7 +10,7 @@ use core::{
 };
 
 use crate::{
-    align_up::{align_ptr_offset, align_up},
+    align::{align_up, free_aligned_ptr},
     api::{AllocError, Allocator, BlinkAllocator, Global},
     cold,
 };
@@ -26,51 +27,85 @@ const CHUNK_MIN_ALIGN: usize = 4096;
 #[repr(C)]
 #[repr(align(16))]
 struct Chunk {
-    used: Cell<usize>,
+    unused: Cell<usize>,
     cap: usize,
     prev: Option<NonNull<Chunk>>,
 }
 
 impl Chunk {
-    fn _alloc(&self, base: *mut u8, layout: Layout) -> Result<NonNull<u8>, usize> {
-        // Safety: `chunk.used` may not be larger than `chunk.cap`.
-        // And `chunk.cap` is number of bytes allocated starting from `base`.
-        let ptr = unsafe { base.add(self.used.get()) };
-
-        let offset = align_ptr_offset(base, layout.align());
-        if offset <= self.cap - self.used.get() {
-            if layout.size() <= self.cap - self.used.get() - offset {
-                // Safety: offset is within the chunk.
-                let ptr = unsafe { ptr.add(offset) };
-                self.used.set(self.used.get() + offset + layout.size());
-
-                // Safety: `ptr` is within allocation after header.
-                let ptr = unsafe { NonNull::new_unchecked(ptr) };
-                return Ok(ptr);
-            }
+    fn _alloc(&self, base: *mut u8, layout: Layout) -> Result<NonNull<[u8]>, usize> {
+        if self.unused.get() < layout.size() {
+            return Err(layout.size() + self.cap - self.unused.get());
         }
 
-        Err(self
-            .used
-            .get()
-            .saturating_add(offset)
-            .saturating_add(layout.size()))
+        match free_aligned_ptr(base, self.unused.get(), layout) {
+            Err(overflow) => {
+                return Err(self.cap + overflow);
+            }
+            Ok(offset) => {
+                let size = self.unused.get() - offset;
+                self.unused.set(offset);
+
+                // Safety:
+                // offset is within unused allocated memory range starting from base.
+                // base is not null.
+                unsafe {
+                    let ptr = base.add(offset);
+                    let slice = core::ptr::slice_from_raw_parts_mut(ptr, size);
+                    Ok(NonNull::new_unchecked(slice))
+                }
+            }
+        }
     }
 
-    // Safety: `chunk` must be a pointer to the chunk allocation.
+    // Safety: `chunk` must be a pointer to the valid chunk allocation.
     #[inline(always)]
-    unsafe fn alloc(chunk: NonNull<Self>, layout: Layout) -> Result<NonNull<u8>, usize> {
-        // Safety: `chunk` is a valid pointer to `Chunk`.
-        // Thus it is safe to make a pointer next to it.
+    unsafe fn alloc(chunk: NonNull<Self>, layout: Layout) -> Result<NonNull<[u8]>, usize> {
+        // Safety: `chunk` is a valid pointer to `Chunk` memory allocation.
         let base = unsafe { chunk.as_ptr().add(1).cast::<u8>() };
         chunk.as_ref()._alloc(base, layout)
     }
 }
 
 /// Single-threaded blink allocator.
+///
+/// # Example
+///
+/// ```ignore
+/// # #![cfg_attr(feature = "nightly", feature(allocator_api))]
+/// # use blink_alloc::BlinkAlloc;
+/// # use blink_alloc::api::Allocator;
+/// # use std::ptr::NonNull;
+///
+/// let mut blink = BlinkAlloc::new();
+/// let layout = std::alloc::Layout::new::<[u32; 8]>();
+/// let ptr = blink.allocate(layout).unwrap();
+/// let ptr = NonNull::new(ptr.as_ptr() as *mut u8).unwrap(); // Method for this is unstable.
+///
+/// unsafe {
+///     std::ptr::write(ptr.as_ptr().cast(), [1, 2, 3, 4, 5, 6, 7, 8]);
+///     blink.deallocate(ptr, layout);
+/// }
+///
+/// blink.reset();
+/// ```
+///
+/// # Example that uses `allocator_api`
+///
+/// ```
+/// #
+/// # #![cfg_attr(feature = "nightly", feature(allocator_api))]
+/// # use blink_alloc::BlinkAlloc;
+/// # #[cfg(feature = "nightly")]
+/// # fn main() {
+/// # }
+/// # #[cfg(not(feature = "nightly"))]
+/// # fn main() {}
+/// ```
+///
 pub struct BlinkAlloc<A: Allocator> {
     root: Cell<Option<NonNull<Chunk>>>,
-    prev_chunks_size: Cell<usize>,
+    last_chunk_size: Cell<usize>,
     allocator: A,
 }
 
@@ -108,14 +143,14 @@ where
     pub fn new_in(allocator: A) -> Self {
         BlinkAlloc {
             root: Cell::new(None),
-            prev_chunks_size: Cell::new(0),
+            last_chunk_size: Cell::new(0),
             allocator,
         }
     }
 
     /// Main allocation method.
-    /// All different allocation methods are implemented in terms of this one.
-    fn _alloc(&self, layout: Layout) -> Result<NonNull<u8>, AllocError> {
+    /// All other allocation methods are implemented in terms of this one.
+    fn _alloc(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
         let Some(mut min_chunk_size) = layout.size().checked_add(layout.align()).and_then(|l| l.checked_add(size_of::<Chunk>())) else {
             // Layout is too large to fit into a chunk
             return Err(AllocError);
@@ -137,7 +172,7 @@ where
         // Have to allocate new chunk.
         cold();
 
-        let mut chunk_size = self.prev_chunks_size.get().saturating_add(min_chunk_size);
+        let mut chunk_size = self.last_chunk_size.get().saturating_add(min_chunk_size);
         if chunk_size < CHUNK_POWER_OF_TWO_THRESHOLD {
             chunk_size = chunk_size.next_power_of_two();
         } else {
@@ -154,12 +189,13 @@ where
         let new_chunk = chunk_ptr.cast::<Chunk>();
 
         // Safety: `chunk_ptr` is a valid pointer to chunk allocation.
+        let cap = chunk_size - size_of::<Chunk>();
         unsafe {
             ptr::write(
                 new_chunk.as_ptr(),
                 Chunk {
-                    used: Cell::new(0),
-                    cap: chunk_size - size_of::<Chunk>(),
+                    unused: Cell::new(cap),
+                    cap,
                     prev: chunk,
                 },
             );
@@ -174,8 +210,8 @@ where
 
         if let Some(chunk) = chunk {
             let last_chunk_cap = unsafe { chunk.as_ref().cap };
-            self.prev_chunks_size
-                .set(self.prev_chunks_size.get().saturating_add(last_chunk_cap));
+            self.last_chunk_size
+                .set(self.last_chunk_size.get().saturating_add(last_chunk_cap));
         }
 
         self.root.set(Some(new_chunk));
@@ -200,7 +236,7 @@ where
             // This function owns mutable reference to `self`.
             unsafe {
                 let chunk = chunk.as_mut();
-                chunk.used.set(0);
+                *chunk.unused.get_mut() = chunk.cap;
                 chunk.prev.take()
             }
         } else {
@@ -244,7 +280,7 @@ where
     A: Allocator,
 {
     #[inline(always)]
-    fn allocate(&self, layout: Layout) -> Result<NonNull<u8>, AllocError> {
+    fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
         self._alloc(layout)
     }
 
@@ -259,7 +295,7 @@ where
     A: Allocator,
 {
     #[inline(always)]
-    fn allocate(&self, layout: Layout) -> Result<NonNull<u8>, AllocError> {
+    fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
         self._alloc(layout)
     }
 

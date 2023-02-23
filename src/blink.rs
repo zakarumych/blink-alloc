@@ -1,25 +1,27 @@
-//! This module provides `BlinkAlloc` type which is a single-threaded
-//! blink allocator.
-//!
-//!
+//! Provides `Blink` allocator adaptor.
 
 use core::{
     alloc::Layout,
     convert::identity,
     marker::PhantomData,
-    mem::needs_drop,
+    mem::{needs_drop, size_of},
     ptr::{self, addr_of_mut, copy_nonoverlapping, slice_from_raw_parts_mut, NonNull},
 };
 
 use crate::{
-    api::{BlinkAllocator, Global},
+    api::{Allocator, BlinkAllocator, Global},
     drop_list::{DropItem, DropList},
-    st::BlinkAlloc,
+    local::BlinkAlloc,
     BlinkAllocError, ResultExt,
 };
 
-/// Safe adaptor for blink allocator.
-/// Provides user-friendly safe API for blink allocator usage.
+/// An allocator adaptor for designed for blink allocator.
+/// Provides user-friendly methods to emplace values into allocated memory.
+/// Supports emplace existing, constructing value in allocated memory directly or indirectly.
+/// And also emplacing items yield from iterator into contiguous memory and returning slice reference.
+///
+/// `Blink` calls `Drop::drop` for emplaced values when reset or dropped.
+/// This allows to use `Blink` instead of collections in some scenarios without needing to enable `allocation_api` feature.
 pub struct Blink<A = BlinkAlloc<Global>> {
     drop_list: DropList,
     alloc: A,
@@ -47,18 +49,28 @@ impl<A> Blink<A> {
 
 impl<A> Blink<A>
 where
-    A: BlinkAllocator,
+    A: Allocator,
 {
     /// Returns reference to allocator instance.
     pub fn inner(&self) -> &A {
         &self.alloc
     }
 
-    /// Resets this instance. Drops all allocated values.
+    /// Drops all allocated values.
     /// And resets associated allocator instance.
-    pub fn reset(&mut self) {
+    pub fn reset(&mut self)
+    where
+        A: BlinkAllocator,
+    {
         self.drop_list.reset();
         unsafe { self.alloc.reset() };
+    }
+
+    /// Drops all allocated values.
+    ///
+    /// Prefer to use `reset` method if associated allocator instance supports it.
+    pub fn drop_all(&mut self) {
+        self.drop_list.reset();
     }
 
     unsafe fn _try_emplace_drop<T, I, F>(&self, init: I, f: F) -> Result<&mut T, BlinkAllocError<I>>
@@ -82,8 +94,12 @@ where
             });
         };
 
-        let item_ptr = ptr.cast::<DropItem<T>>().as_ptr();
-        let value_ptr = unsafe { ptr.as_ptr().add(value_offset).cast::<T>() };
+        let len = ptr.len();
+        debug_assert!(len >= full_layout.size());
+        let ptr = ptr.as_ptr() as *mut u8;
+
+        let item_ptr = ptr.cast::<DropItem<T>>();
+        let value_ptr = unsafe { ptr.add(value_offset).cast::<T>() };
 
         unsafe {
             ptr::write(value_ptr, f(init));
@@ -199,28 +215,38 @@ where
                 }
             };
 
-            let (lower, upper) = iter.size_hint();
+            let (lower, _) = iter.size_hint();
             let lower_hint = lower.max(prev_count);
-            let Some(hint) = upper.unwrap_or(lower_hint).checked_add(1) else {
-                    return Err(BlinkAllocError { value: (guard.set(), one_more_elem), layout: None });
+            let Some(hint) = lower_hint.checked_add(1) else {
+                return Err(BlinkAllocError { value: (guard.set(), one_more_elem), layout: None });
             };
-            let Some(hint) = hint.checked_add(prev_count) else {
-                    return Err(BlinkAllocError { value: (guard.set(), one_more_elem), layout: None });
+            let Some(mut hint) = hint.checked_add(prev_count) else {
+                return Err(BlinkAllocError { value: (guard.set(), one_more_elem), layout: None });
             };
 
             let item_layout = Layout::new::<DropItem<[T; 0]>>();
             let Ok(array_layout) = Layout::array::<T>(hint) else {
-                    return Err(BlinkAllocError { value: (guard.set(), one_more_elem), layout: None });
+                return Err(BlinkAllocError { value: (guard.set(), one_more_elem), layout: None });
             };
             let Ok((full_layout, array_offset)) = item_layout.extend(array_layout) else {
-                    return Err(BlinkAllocError { value: (guard.set(), one_more_elem), layout: None });
+                return Err(BlinkAllocError { value: (guard.set(), one_more_elem), layout: None });
             };
             let Ok(ptr) = self.alloc.allocate(full_layout) else {
                 return Err(BlinkAllocError { value: (guard.set(), one_more_elem), layout: Some(full_layout) });
             };
 
-            let item_ptr = ptr.cast::<DropItem<[T; 0]>>().as_ptr();
-            let array_ptr = unsafe { ptr.as_ptr().add(array_offset).cast::<T>() };
+            let len = ptr.len();
+            if len > full_layout.size() {
+                let fits = (len - array_offset) / size_of::<T>();
+                hint = fits;
+            } else {
+                debug_assert_eq!(len, full_layout.size());
+            }
+
+            let ptr = ptr.as_ptr() as *mut u8;
+
+            let item_ptr = ptr.cast::<DropItem<[T; 0]>>();
+            let array_ptr = unsafe { ptr.add(array_offset).cast::<T>() };
 
             // Takes previous item from guard and copy values to new item.
             if let Some(item) = guard.prev_item.take() {
