@@ -1,5 +1,5 @@
 #![doc = include_str!("../README.md")]
-#![no_std]
+#![cfg_attr(not(test), no_std)]
 #![cfg_attr(feature = "nightly", feature(allocator_api))]
 
 #[cfg(feature = "alloc")]
@@ -40,7 +40,11 @@ mod tests;
 #[cfg(all(feature = "oom_handling", not(no_global_oom_handling)))]
 mod oom;
 
-pub use self::{api::BlinkAllocator, blink::Blink, local::BlinkAlloc};
+pub use self::{
+    api::BlinkAllocator,
+    blink::{Blink, Emplace},
+    local::BlinkAlloc,
+};
 
 #[cfg(feature = "sync")]
 pub use self::sync::{LocalBlinkAlloc, SyncBlinkAlloc};

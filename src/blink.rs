@@ -4,7 +4,7 @@ use core::{
     alloc::Layout,
     convert::{identity, Infallible},
     marker::PhantomData,
-    mem::{needs_drop, size_of, ManuallyDrop},
+    mem::{needs_drop, size_of, ManuallyDrop, MaybeUninit},
     ptr::{self, NonNull},
 };
 
@@ -27,6 +27,27 @@ use crate::local::BlinkAlloc;
 
 #[cfg(all(feature = "oom_handling", not(no_global_oom_handling)))]
 use crate::oom::{handle_alloc_error, size_overflow};
+
+type EmplaceType<T, E> = Result<T, ManuallyDrop<E>>;
+type EmplaceSlot<T, E> = MaybeUninit<EmplaceType<T, E>>;
+
+pub trait CoerceFromMut<'a, T: ?Sized> {
+    fn coerce(t: &'a mut T) -> Self;
+}
+
+impl<'a, T: ?Sized> CoerceFromMut<'a, T> for &'a mut T {
+    #[inline(always)]
+    fn coerce(t: &'a mut T) -> Self {
+        t
+    }
+}
+
+impl<'a, T: ?Sized> CoerceFromMut<'a, T> for &'a T {
+    #[inline(always)]
+    fn coerce(t: &'a mut T) -> Self {
+        t
+    }
+}
 
 with_global_default! {
     /// An allocator adaptor for designed for blink allocator.
@@ -92,6 +113,24 @@ impl Blink<BlinkAlloc<Global>> {
     pub const fn new() -> Self {
         Blink::new_in(BlinkAlloc::new())
     }
+
+    /// Creates new blink instance with `BlinkAlloc` baked by `Global`
+    /// allocator.
+    /// `BlinkAlloc` receives starting chunk size.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(not(feature = "oom_handling"))] fn main() {}
+    /// # #[cfg(feature = "oom_handling")] fn main() {
+    /// use blink_alloc::Blink;
+    /// let mut blink = Blink::with_chunk_size(16);
+    ///
+    /// blink.emplace().value(42);
+    /// # }
+    pub const fn with_chunk_size(capacity: usize) -> Self {
+        Blink::new_in(BlinkAlloc::with_chunk_size(capacity))
+    }
 }
 
 impl<A> Blink<A> {
@@ -128,10 +167,33 @@ where
         self.alloc.reset();
     }
 
+    /// Allocates memory for a copy of the slice.
+    /// If allocation fails, returns `Err`.
+    /// Otherwise copies the slice into the allocated memory and returns
+    /// mutable reference to the copy.
+    #[inline]
+    unsafe fn _try_slice_copy<'a, T, E>(
+        &'a self,
+        slice: &[T],
+        alloc_err: impl FnOnce(Layout) -> E,
+    ) -> Result<&'a mut [T], E>
+    where
+        T: Copy,
+    {
+        let layout = Layout::for_value(slice);
+        let Ok(ptr) = self.alloc.allocate(layout) else {
+            return Err(alloc_err(layout));
+        };
+
+        let ptr = ptr.as_ptr().cast();
+        core::ptr::copy_nonoverlapping(slice.as_ptr(), ptr, slice.len());
+        Ok(core::slice::from_raw_parts_mut(ptr, slice.len()))
+    }
+
     unsafe fn _try_emplace_drop<'a, T, I, G: 'a, E>(
         &'a self,
         init: I,
-        f: impl FnOnce(I) -> Result<T, ManuallyDrop<G>>,
+        f: impl FnOnce(&mut EmplaceSlot<T, G>, I),
         err: impl FnOnce(G) -> E,
         alloc_err: impl FnOnce(I, Layout) -> E,
     ) -> Result<&'a mut T, E> {
@@ -165,7 +227,7 @@ where
     unsafe fn _try_emplace_no_drop<'a, T, I, G: 'a, E>(
         &self,
         init: I,
-        f: impl FnOnce(I) -> Result<T, ManuallyDrop<G>>,
+        f: impl FnOnce(&mut EmplaceSlot<T, G>, I),
         err: impl FnOnce(G) -> E,
         alloc_err: impl FnOnce(I, Layout) -> E,
     ) -> Result<&'a mut T, E> {
@@ -177,7 +239,11 @@ where
         // Safety: `ptr` is a valid pointer to allocated memory.
         // Allocated with this `T`'s layout.
         // Duration of the allocation is until next call to [`BlinkAlloc::reset`].
-        match in_place(ptr.as_ptr().cast(), init, f) {
+
+        let uninit = &mut *ptr.as_ptr().cast();
+        f(uninit, init);
+
+        match uninit.assume_init_mut() {
             Ok(value) => Ok(value),
             Err(g) => {
                 let err = err(unsafe { ManuallyDrop::take(g) });
@@ -197,7 +263,7 @@ where
     unsafe fn _try_emplace<'a, T, I, G: 'a, E>(
         &'a self,
         init: I,
-        f: impl FnOnce(I) -> Result<T, ManuallyDrop<G>>,
+        f: impl FnOnce(&mut EmplaceSlot<T, G>, I),
         no_drop: bool,
         err: impl FnOnce(G) -> E,
         alloc_err: impl FnOnce(I, Layout) -> E,
@@ -266,19 +332,19 @@ where
             };
 
             let (lower, _) = iter.size_hint();
-            let Some(hint) = lower.checked_add(1) else {
+            let Some(lower) = lower.checked_add(1) else {
                 return Err(err(guard.set(), one_more_elem, None));
             };
-
-            let hint = hint.max(guard.count);
-            let mut hint = hint.saturating_add(guard.count);
-
-            let Ok(array_layout) = Layout::array::<T>(hint) else {
+            let Some(mut size_hint) = guard.count.checked_add(lower) else {
+                return Err(err(guard.set(), one_more_elem, None));
+            };
+            let Ok(array_layout) = Layout::array::<T>(size_hint) else {
                 return Err(err(guard.set(), one_more_elem, None));
             };
             let Ok((full_layout, array_offset)) = item_layout.extend(array_layout) else {
                 return Err(err(guard.set(), one_more_elem, None));
             };
+
             debug_assert_eq!(array_offset, size_of::<DropItem<[T; 0]>>());
 
             let res = match guard.ptr {
@@ -297,7 +363,7 @@ where
             let len = ptr.len();
             if len > full_layout.size() {
                 let fits = (len - size_of::<DropItem<[T; 0]>>()) / size_of::<T>();
-                hint = fits;
+                size_hint = fits;
             } else {
                 debug_assert_eq!(len, full_layout.size());
             }
@@ -310,17 +376,16 @@ where
                 ptr::write(array_ptr.add(guard.count), one_more_elem);
             }
 
-            let mut sub_iter = iter.by_ref().take(hint - guard.count - 1);
+            guard.count += 1;
 
-            for idx in guard.count + 1.. {
+            for idx in guard.count..size_hint {
                 if Layout::new::<Option<T>>() == Layout::new::<T>() {
                     // Putting elements directly into the array.
-                    if in_place(array_ptr.add(idx).cast(), &mut sub_iter, Iterator::next).is_none()
-                    {
+                    if in_place(array_ptr.add(idx).cast(), &mut iter, Iterator::next).is_none() {
                         break;
                     }
                 } else {
-                    match sub_iter.next() {
+                    match iter.next() {
                         None => break,
                         Some(elem) => ptr::write(array_ptr.add(idx), elem),
                     }
@@ -368,13 +433,13 @@ where
             };
 
             let (lower, _) = iter.size_hint();
-            let Some(hint) = lower.checked_add(1) else {
+            let Some(lower) = lower.checked_add(1) else {
                 return Err(err(guard.set(), one_more_elem, None));
             };
-            let hint = hint.max(guard.count);
-            let mut hint = hint.saturating_add(guard.count);
-
-            let Ok(array_layout) = Layout::array::<T>(hint) else {
+            let Some(mut size_hint) = guard.count.checked_add(lower) else {
+                return Err(err(guard.set(), one_more_elem, None));
+            };
+            let Ok(array_layout) = Layout::array::<T>(size_hint) else {
                 return Err(err(guard.set(), one_more_elem, None));
             };
 
@@ -393,7 +458,8 @@ where
             let len = ptr.len();
             if len > array_layout.size() {
                 let fits = len / size_of::<T>();
-                hint = fits;
+                debug_assert!(fits >= size_hint);
+                size_hint = fits;
             } else {
                 debug_assert_eq!(len, array_layout.size());
             }
@@ -407,17 +473,14 @@ where
 
             guard.count += 1;
 
-            let mut sub_iter = iter.by_ref().take(hint - guard.count - 1);
-
-            for idx in guard.count.. {
+            for idx in guard.count..size_hint {
                 if Layout::new::<Option<T>>() == Layout::new::<T>() {
                     // Putting elements directly into the array.
-                    if in_place(array_ptr.add(idx).cast(), &mut sub_iter, Iterator::next).is_none()
-                    {
+                    if in_place(array_ptr.add(idx).cast(), &mut iter, Iterator::next).is_none() {
                         break;
                     }
                 } else {
-                    match sub_iter.next() {
+                    match iter.next() {
                         None => break,
                         Some(elem) => ptr::write(array_ptr.add(idx), elem),
                     }
@@ -463,8 +526,8 @@ impl<'a, A, T, R, S> Emplace<'a, A, T, R, S>
 where
     A: BlinkAllocator,
     T: 'a,
-    R: From<&'a mut T>,
-    S: From<&'a mut [T]>,
+    R: CoerceFromMut<'a, T>,
+    S: CoerceFromMut<'a, [T]>,
 {
     /// Allocates memory for a value and moves `value` into the memory.
     /// If allocation fails, returns `Err(value)`.
@@ -474,13 +537,15 @@ where
         unsafe {
             self.blink._try_emplace(
                 value,
-                Ok::<_, ManuallyDrop<Infallible>>,
+                |slot, value| {
+                    slot.write(Ok::<_, ManuallyDrop<Infallible>>(value));
+                },
                 self.no_drop,
                 |never| match never {},
                 |init, _| init,
             )
         }
-        .map(R::from)
+        .map(R::coerce)
     }
 
     /// Allocates memory for a value and moves `value` into the memory.
@@ -489,17 +554,20 @@ where
     #[cfg(all(feature = "oom_handling", not(no_global_oom_handling)))]
     #[inline]
     pub fn value(&self, value: T) -> R {
-        unsafe {
-            self.blink._try_emplace(
-                value,
-                Ok::<_, ManuallyDrop<Infallible>>,
-                self.no_drop,
-                identity,
-                |_, layout| handle_alloc_error(layout),
-            )
-        }
-        .safe_ok()
-        .into()
+        R::coerce(
+            unsafe {
+                self.blink._try_emplace(
+                    value,
+                    |slot, value| {
+                        slot.write(Ok::<_, ManuallyDrop<Infallible>>(value));
+                    },
+                    self.no_drop,
+                    identity,
+                    |_, layout| handle_alloc_error(layout),
+                )
+            }
+            .safe_ok(),
+        )
     }
 
     /// Allocates memory for a value.
@@ -514,13 +582,15 @@ where
         unsafe {
             self.blink._try_emplace(
                 f,
-                |f| Ok::<_, ManuallyDrop<Infallible>>(f()),
+                |slot, f| {
+                    slot.write(Ok::<_, ManuallyDrop<Infallible>>(f()));
+                },
                 self.no_drop,
                 never,
                 |f, _| f,
             )
         }
-        .map(R::from)
+        .map(R::coerce)
     }
 
     /// Allocates memory for a value.
@@ -535,17 +605,20 @@ where
     where
         F: FnOnce() -> T,
     {
-        unsafe {
-            self.blink._try_emplace(
-                f,
-                |f| Ok::<_, ManuallyDrop<Infallible>>(f()),
-                self.no_drop,
-                never,
-                |_, layout| handle_alloc_error(layout),
-            )
-        }
-        .safe_ok()
-        .into()
+        R::coerce(
+            unsafe {
+                self.blink._try_emplace(
+                    f,
+                    |slot, f| {
+                        slot.write(Ok::<_, ManuallyDrop<Infallible>>(f()));
+                    },
+                    self.no_drop,
+                    never,
+                    |_, layout| handle_alloc_error(layout),
+                )
+            }
+            .safe_ok(),
+        )
     }
     /// Allocates memory for a value.
     /// If allocation fails, returns error with closure.
@@ -561,13 +634,15 @@ where
         unsafe {
             self.blink._try_emplace(
                 f,
-                |f| f().map_err(ManuallyDrop::new),
+                |slot, f| {
+                    slot.write(f().map_err(ManuallyDrop::new));
+                },
                 self.no_drop,
                 |err| Ok(err),
                 |f, _| Err(f),
             )
         }
-        .map(R::from)
+        .map(R::coerce)
     }
 
     /// Allocates memory for a value.
@@ -584,13 +659,15 @@ where
         unsafe {
             self.blink._try_emplace(
                 f,
-                |f| f().map_err(ManuallyDrop::new),
+                |slot, f| {
+                    slot.write(f().map_err(ManuallyDrop::new));
+                },
                 self.no_drop,
                 identity,
                 |_, layout| handle_alloc_error(layout),
             )
         }
-        .map(R::from)
+        .map(R::coerce)
     }
 
     /// Allocates memory for an array and initializes it with
@@ -600,12 +677,8 @@ where
     /// new larger array is allocated and values are copied.
     /// Repeats until iterator is exhausted.
     /// Works best on iterators that report accurate upper size hint.
-    /// Worst case:
-    /// `Iterator::size_hint` returns `(M, None)`
-    /// and yields `N` values where `N >> M`.
-    /// In that case `N / (M + 1)` allocations are performed
-    /// and total of `O(N ^ 2 / (M + 1))` memory is used.
-    ///
+    /// Grows allocated memory potentially reducing number of allocations
+    /// and copies.
     /// If allocation fails, returns slice of values emplaced so far.
     /// And one element that was taken from iterator and not emplaced.
     #[inline]
@@ -616,10 +689,10 @@ where
         unsafe {
             self.blink
                 ._try_emplace_from_iter(iter, self.no_drop, |slice: &'a mut [T], value, _| {
-                    (S::from(slice), value)
+                    (S::coerce(slice), value)
                 })
         }
-        .map(S::from)
+        .map(S::coerce)
     }
 
     /// Allocates memory for an array and initializes it with
@@ -629,30 +702,28 @@ where
     /// new larger array is allocated and values are copied.
     /// Repeats until iterator is exhausted.
     /// Works best on iterators that report accurate upper size hint.
-    /// Worst case:
-    /// `Iterator::size_hint` returns `(M, None)`
-    /// and yields `N` values where `N >> M`.
-    /// In that case `N / (M + 1)` allocations are performed
-    /// and total of `O(N ^ 2 / (M + 1))` memory is used.
-    ///
+    /// Grows allocated memory potentially reducing number of allocations
+    /// and copies.
     /// If allocation fails, diverges.
     /// Values already emplaced will be dropped.
     /// One last value that was taken from iterator and not emplaced
     /// is dropped before this method returns.
     #[cfg(all(feature = "oom_handling", not(no_global_oom_handling)))]
     #[inline]
-    pub fn from_iter<I>(&self, iter: I) -> &'a mut [T]
+    pub fn from_iter<I>(&self, iter: I) -> S
     where
         I: Iterator<Item = T>,
     {
-        unsafe {
-            self.blink
-                ._try_emplace_from_iter(iter, self.no_drop, |_, _, layout| match layout {
-                    Some(layout) => handle_alloc_error(layout),
-                    None => size_overflow(),
-                })
-        }
-        .safe_ok()
+        S::coerce(
+            unsafe {
+                self.blink
+                    ._try_emplace_from_iter(iter, self.no_drop, |_, _, layout| match layout {
+                        Some(layout) => handle_alloc_error(layout),
+                        None => size_overflow(),
+                    })
+            }
+            .safe_ok(),
+        )
     }
 }
 
@@ -673,18 +744,68 @@ where
     /// # Example
     ///
     /// ```
-    /// # use blink_alloc   ::Blink;
+    /// # use blink_alloc::Blink;
     /// let mut blink = Blink::new();
     /// let foo = blink.put(42);
     /// assert_eq!(*foo, 42);
     /// *foo = 24;
     /// blink.reset();
-    /// // assert_eq!(*foo, 24); // Cannot compile. `foo` cannot outlive reset.
+    /// // assert_eq!(*foo, 24); // Cannot compile. `foo` does not outlive reset.
     /// ```
     #[cfg(all(feature = "oom_handling", not(no_global_oom_handling)))]
     #[inline]
     pub fn put<T: 'static>(&self, value: T) -> &mut T {
         self.emplace().value(value)
+    }
+
+    /// Copies the slice to the allocated memory
+    /// and returns reference to the new slice.
+    #[cfg(all(feature = "oom_handling", not(no_global_oom_handling)))]
+    #[inline]
+    pub fn slice_copy<T>(&self, slice: &[T]) -> &mut [T]
+    where
+        T: Copy,
+    {
+        let result = unsafe { self._try_slice_copy(slice, handle_alloc_error) };
+        match result {
+            Ok(slice) => slice,
+            Err(never) => never,
+        }
+    }
+
+    /// Allocates memory for a copy of the slice.
+    /// Copies the slice to the allocated memory
+    /// and returns reference to the new slice.
+    /// If allocation fails, returns `None`.
+    #[inline]
+    pub fn try_slice_copy<T>(&self, slice: &[T]) -> Option<&mut [T]>
+    where
+        T: Copy,
+    {
+        unsafe { self._try_slice_copy(slice, |_| ()) }.ok()
+    }
+
+    /// Copies the slice to the allocated memory
+    /// and returns reference to the new slice.
+    #[cfg(all(feature = "oom_handling", not(no_global_oom_handling)))]
+    #[inline]
+    pub fn str_copy(&self, string: &str) -> &mut str {
+        let result = unsafe { self._try_slice_copy(string.as_bytes(), handle_alloc_error) };
+        match result {
+            Ok(slice) => unsafe { core::str::from_utf8_unchecked_mut(slice) },
+            Err(never) => never,
+        }
+    }
+
+    /// Allocates memory for a copy of the slice.
+    /// Copies the slice to the allocated memory
+    /// and returns reference to the new slice.
+    /// If allocation fails, returns `None`.
+    #[inline]
+    pub fn try_str_copy(&self, string: &str) -> Option<&mut str> {
+        unsafe { self._try_slice_copy(string.as_bytes(), |_| ()) }
+            .ok()
+            .map(|bytes| unsafe { core::str::from_utf8_unchecked_mut(bytes) })
     }
 
     /// Returns an `Emplace` adaptor that can emplace values into
@@ -702,6 +823,18 @@ where
     ///   Unsafe version of `emplace`.
     ///   User must guarantee that the value won't have access to references
     ///   allocated by the blink allocator later.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use blink_alloc::Blink;
+    /// let mut blink = Blink::new();
+    /// let foo = blink.emplace().value(42);
+    /// assert_eq!(*foo, 42);
+    /// *foo = 24;
+    /// blink.reset();
+    /// // assert_eq!(*foo, 24); // Cannot compile. `foo` does not outlive reset.
+    /// ```
     #[inline]
     pub fn emplace<T: 'static>(&self) -> Emplace<A, T> {
         Emplace {
@@ -725,6 +858,29 @@ where
     ///   Unsafe version of `emplace`.
     ///   User must guarantee that the value won't have access to references
     ///   allocated by the blink allocator later.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use blink_alloc::Blink;
+    /// struct Foo<'a>(&'a String);
+    ///
+    /// impl Drop for Foo<'_> {
+    ///     fn drop(&mut self) {
+    ///         println!("{}", self.0);
+    ///     }
+    /// }
+    ///
+    /// let mut blink = Blink::new();
+    /// let s = "Hello".to_owned();
+    /// let foo = blink.emplace_no_drop().value(Foo(&s));
+    /// assert_eq!(foo.0, "Hello");
+    /// let world = blink.put("World".to_owned());
+    /// // Would be unsound if `foo` could be dropped.
+    /// foo.0 = world;
+    /// blink.reset();
+    /// // assert_eq!(foo.0, "Universe"); // Cannot compile. `foo` does not outlive reset.
+    /// ```
     #[inline]
     pub fn emplace_no_drop<T>(&self) -> Emplace<A, T> {
         Emplace {
@@ -752,6 +908,28 @@ where
     ///   Unsafe version of `emplace`.
     ///   User must guarantee that the value won't have access to references
     ///   allocated by the blink allocator later.
+    ///
+    ///
+    /// ```
+    /// # use blink_alloc::Blink;
+    /// struct Foo<'a>(&'a String);
+    ///
+    /// impl Drop for Foo<'_> {
+    ///     fn drop(&mut self) {
+    ///         println!("{}", self.0);
+    ///     }
+    /// }
+    ///
+    /// let mut blink = Blink::new();
+    /// let s = "Hello".to_owned();
+    /// let foo = blink.emplace_no_drop().value(Foo(&s));
+    /// assert_eq!(foo.0, "Hello");
+    /// let world = blink.put("World".to_owned());
+    /// // Would be unsound if `foo` was mutable.
+    /// // foo.0 = world;
+    /// blink.reset();
+    /// // assert_eq!(foo.0, "Universe"); // Cannot compile. `foo` does not outlive reset.
+    /// ```
     #[inline]
     pub fn emplace_shared<T>(&self) -> Emplace<A, T, &T, &[T]> {
         Emplace {
@@ -783,27 +961,25 @@ where
     /// is impossible.
     ///
     /// ```no_run
-    /// # #[cfg(not(all(feature = "alloc", feature = "oom_handling")))] fn main() {}
-    /// # #[cfg(all(feature = "alloc", feature = "oom_handling"))] fn main() {
     /// # use blink_alloc::Blink;
+    /// struct Foo<'a>(&'a String);
     ///
-    /// struct Foo<'a> {
-    ///     s: &'a String,
-    /// }
-    ///
-    /// impl<'a> Drop for Foo<'a> {
+    /// impl Drop for Foo<'_> {
     ///     fn drop(&mut self) {
-    ///         println!("{}", self.s);
+    ///         println!("{}", self.0);
     ///     }
     /// }
     ///
     /// let mut blink = Blink::new();
-    /// let s = String::from("Hello");
-    /// let foo = unsafe { blink.emplace_unchecked().value(Foo { s: &s }) };
-    /// let s = blink.emplace().value(String::from("World"));
-    /// foo.s = s;
-    /// blink.reset(); // Causes UB when value referenced by `foo` is dropped.
-    /// # }
+    /// let s = "Hello".to_owned();
+    /// let foo = blink.emplace_no_drop().value(Foo(&s));
+    /// assert_eq!(foo.0, "Hello");
+    /// let world = blink.put("World".to_owned());
+    /// // Unsound since `foo` would access `world` in `Drop`
+    /// // and `world` is dropped earlier.
+    /// foo.0 = world;
+    /// blink.reset();
+    /// // assert_eq!(foo.0, "Universe"); // Cannot compile. `foo` does not outlive reset.
     /// ```
     #[inline]
     pub unsafe fn emplace_unchecked<T>(&self) -> Emplace<A, T> {
