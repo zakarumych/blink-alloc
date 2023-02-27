@@ -16,8 +16,9 @@ keywords = ["allocator", "arena", "concurrent", "drop"]
 nightly = ["allocator-api2/nightly"]
 alloc = ["allocator-api2/alloc"]
 oom_handling = []
-default = ["alloc", "oom_handling"]
 sync = ["parking_lot"]
+
+default = ["alloc", "oom_handling"]
 
 [dependencies]
 parking_lot = {  version = "0.12", optional = true }

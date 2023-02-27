@@ -8,21 +8,24 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  check-toolchains:
+  test-features:
     if: ${{ github.event.label.name == 'ready-to-merge' }}
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        rust-toolchain: [stable, nightly]
+        alloc: ["", "alloc,"]
+        sync: ["", "sync,"]
+        oom_handling: ["", "oom_handling,"]
+        nightly: ["", "nightly,"]
     steps:
     - uses: actions/checkout@v2
-    - name: Install ${{ matrix.rust-toolchain }} toolchain
+    - name: Install nightly toolchain
       uses: actions-rs/toolchain@v1
       with:
         profile: minimal
-        toolchain: ${{ matrix.rust-toolchain }}
+        toolchain: nightly
     - name: Run cargo check
       uses: actions-rs/cargo@v1
       with:
-        command: check
-        args: --all --features=sync
+        command: test
+        args: --all --features=${{ matrix.alloc }}${{ matrix.sync }}${{ matrix.oom_handling }}${{ matrix.nightly }}
