@@ -58,3 +58,10 @@ impl<T> ResultExt<T> for Result<T, core::convert::Infallible> {
         }
     }
 }
+
+#[inline]
+unsafe fn in_place<'a, T, I>(ptr: *mut T, init: I, f: impl FnOnce(I) -> T) -> &'a mut T {
+    // Ask compiler very nicely to store return directly into memory.
+    core::ptr::write(ptr, f(init));
+    &mut *ptr
+}
