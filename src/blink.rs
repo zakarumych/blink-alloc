@@ -2,10 +2,10 @@
 
 use core::{
     alloc::Layout,
-    convert::identity,
+    convert::{identity, Infallible},
     marker::PhantomData,
-    mem::{needs_drop, size_of},
-    ptr::{self, addr_of_mut, copy_nonoverlapping, slice_from_raw_parts_mut, NonNull},
+    mem::{needs_drop, size_of, ManuallyDrop},
+    ptr::{self, NonNull},
 };
 
 use allocator_api2::Allocator;
@@ -16,6 +16,7 @@ use allocator_api2::Global;
 use crate::{
     api::BlinkAllocator,
     drop_list::{DropItem, DropList},
+    in_place,
 };
 
 #[cfg(all(feature = "oom_handling", not(no_global_oom_handling)))]
@@ -127,53 +128,64 @@ where
         self.alloc.reset();
     }
 
-    unsafe fn _try_emplace_drop<T, I, E>(
-        &self,
+    unsafe fn _try_emplace_drop<'a, T, I, G: 'a, E>(
+        &'a self,
         init: I,
-        f: impl FnOnce(I) -> T,
-        err: impl FnOnce(I, Layout) -> E,
-    ) -> Result<&mut T, E> {
-        let layout = Layout::new::<DropItem<T>>();
+        f: impl FnOnce(I) -> Result<T, ManuallyDrop<G>>,
+        err: impl FnOnce(G) -> E,
+        alloc_err: impl FnOnce(I, Layout) -> E,
+    ) -> Result<&'a mut T, E> {
+        let layout = Layout::new::<DropItem<Result<T, ManuallyDrop<E>>>>();
 
         let Ok(ptr) = self.alloc.allocate(layout) else {
-            return Err(err(init, layout));
+            return Err(alloc_err(init, layout));
         };
-
-        let ptr = ptr.as_ptr().cast::<u8>();
-
-        let item_ptr = ptr.cast::<DropItem<T>>();
-        let value_ptr = addr_of_mut!((*item_ptr).value);
-
-        unsafe {
-            ptr::write(value_ptr, f(init));
-        }
 
         // Safety: `item_ptr` is a valid pointer to allocated memory for type `DropItem<T>`.
-        let item = unsafe { DropItem::init_value(item_ptr) };
-        let reference = self.drop_list.add(item);
-        Ok(reference)
+        let item = unsafe { DropItem::init_value(ptr.cast(), init, f) };
+
+        if item.value.is_ok() {
+            match self.drop_list.add(item) {
+                Ok(value) => return Ok(value),
+                _ => unreachable!(),
+            }
+        }
+
+        match &mut item.value {
+            Err(g) => {
+                let err = err(unsafe { ManuallyDrop::take(g) });
+                // Give memory back.
+                self.alloc.deallocate(ptr.cast(), layout);
+                Err(err)
+            }
+            _ => unreachable!(),
+        }
     }
 
-    unsafe fn _try_emplace_no_drop<T, I, E>(
+    unsafe fn _try_emplace_no_drop<'a, T, I, G: 'a, E>(
         &self,
         init: I,
-        f: impl FnOnce(I) -> T,
-        err: impl FnOnce(I, Layout) -> E,
-    ) -> Result<&mut T, E> {
+        f: impl FnOnce(I) -> Result<T, ManuallyDrop<G>>,
+        err: impl FnOnce(G) -> E,
+        alloc_err: impl FnOnce(I, Layout) -> E,
+    ) -> Result<&'a mut T, E> {
         let layout = Layout::new::<T>();
         let Ok(ptr) = self.alloc.allocate(layout) else {
-            return Err(err(init, layout));
+            return Err(alloc_err(init, layout));
         };
 
-        let ptr = ptr.as_ptr().cast::<T>();
-
         // Safety: `ptr` is a valid pointer to allocated memory.
-        // Allocated from this allocator with this layout.
+        // Allocated with this `T`'s layout.
         // Duration of the allocation is until next call to [`BlinkAlloc::reset`].
-        unsafe {
-            ptr::write(ptr, f(init));
+        match in_place(ptr.as_ptr().cast(), init, f) {
+            Ok(value) => Ok(value),
+            Err(g) => {
+                let err = err(unsafe { ManuallyDrop::take(g) });
+                // Give memory back.
+                self.alloc.deallocate(ptr.cast(), layout);
+                Err(err)
+            }
         }
-        Ok(unsafe { &mut *ptr })
     }
 
     /// Allocates memory for a value and emplaces value into the memory
@@ -182,17 +194,18 @@ where
     /// Otherwise calls closure consuming `init`
     /// and initializes memory with closure result.
     #[inline]
-    unsafe fn _try_emplace<T, I, E>(
-        &self,
+    unsafe fn _try_emplace<'a, T, I, G: 'a, E>(
+        &'a self,
         init: I,
-        f: impl FnOnce(I) -> T,
+        f: impl FnOnce(I) -> Result<T, ManuallyDrop<G>>,
         no_drop: bool,
-        err: impl FnOnce(I, Layout) -> E,
-    ) -> Result<&mut T, E> {
+        err: impl FnOnce(G) -> E,
+        alloc_err: impl FnOnce(I, Layout) -> E,
+    ) -> Result<&'a mut T, E> {
         if !needs_drop::<T>() || no_drop {
-            self._try_emplace_no_drop(init, f, err)
+            self._try_emplace_no_drop(init, f, err, alloc_err)
         } else {
-            self._try_emplace_drop(init, f, err)
+            self._try_emplace_drop(init, f, err, alloc_err)
         }
     }
 
@@ -205,7 +218,8 @@ where
         I: Iterator<Item = T>,
     {
         struct Guard<'a, T: 'a> {
-            prev_item: Option<NonNull<DropItem<[T]>>>,
+            ptr: Option<NonNull<DropItem<[T; 0]>>>,
+            count: usize,
             drop_list: &'a DropList,
         }
 
@@ -224,10 +238,13 @@ where
 
             #[inline]
             fn _flush(&mut self) -> &'a mut [T] {
-                if let Some(mut item) = self.prev_item.take() {
-                    // Safety: `item` was properly initialized on previous iteration.
-                    let item = unsafe { item.as_mut() };
-                    unsafe { self.drop_list.add(item) }
+                if let Some(ptr) = self.ptr.take() {
+                    // Safety: `item` was properly initialized.
+                    let (item, slice) = unsafe { DropItem::init_slice(ptr, self.count) };
+                    unsafe {
+                        self.drop_list.add(item);
+                    }
+                    slice
                 } else {
                     &mut []
                 }
@@ -235,21 +252,17 @@ where
         }
 
         let mut guard = Guard {
-            prev_item: None,
+            ptr: None,
+            count: 0,
             drop_list: &self.drop_list,
         };
+
+        let mut last_layout = Layout::new::<()>();
+        let item_layout = Layout::new::<DropItem<[T; 0]>>();
 
         loop {
             let Some(one_more_elem) = iter.next() else {
                 return Ok(guard.set());
-            };
-
-            let prev_count = match guard.prev_item.as_mut() {
-                None => 0,
-                Some(item) => {
-                    // Safety: `item` was properly initialized on previous iteration.
-                    unsafe { item.as_ref().value.len() }
-                }
             };
 
             let (lower, _) = iter.size_hint();
@@ -257,65 +270,63 @@ where
                 return Err(err(guard.set(), one_more_elem, None));
             };
 
-            let hint = hint.max(prev_count);
-            let mut hint = hint.saturating_add(prev_count);
+            let hint = hint.max(guard.count);
+            let mut hint = hint.saturating_add(guard.count);
 
-            let item_layout = Layout::new::<DropItem<[T; 0]>>();
             let Ok(array_layout) = Layout::array::<T>(hint) else {
                 return Err(err(guard.set(), one_more_elem, None));
             };
             let Ok((full_layout, array_offset)) = item_layout.extend(array_layout) else {
                 return Err(err(guard.set(), one_more_elem, None));
             };
-            let Ok(ptr) = self.alloc.allocate(full_layout) else {
+            debug_assert_eq!(array_offset, size_of::<DropItem<[T; 0]>>());
+
+            let res = match guard.ptr {
+                None => self.alloc.allocate(full_layout),
+                Some(ptr) => self.alloc.grow(ptr.cast(), last_layout, full_layout),
+            };
+
+            let Ok(ptr) = res else {
                 return Err(err(guard.set(), one_more_elem, Some(full_layout)));
             };
+            last_layout = full_layout;
+
+            let item_ptr = ptr.cast();
+            guard.ptr = Some(item_ptr);
 
             let len = ptr.len();
             if len > full_layout.size() {
-                let fits = (len - array_offset) / size_of::<T>();
+                let fits = (len - size_of::<DropItem<[T; 0]>>()) / size_of::<T>();
                 hint = fits;
             } else {
                 debug_assert_eq!(len, full_layout.size());
             }
 
-            let ptr = ptr.as_ptr().cast::<u8>();
-
-            let item_ptr = ptr.cast::<DropItem<[T; 0]>>();
-            let array_ptr = unsafe { ptr.add(array_offset).cast::<T>() };
-
-            // Takes previous item from guard and copy values to new item.
-            if let Some(item) = guard.prev_item.take() {
-                // Safety: `item` was properly initialized on previous iteration.
-                let slice = unsafe { addr_of_mut!((*item.as_ptr()).value) };
-
-                // Safety: `array_ptr` is a valid pointer to allocated memory for type `[T; hint]`.
-                // And `hint` is larger than `prev_count` that is size of the `slice`.
-                unsafe {
-                    copy_nonoverlapping(slice as *const T, array_ptr, prev_count);
-                }
-            }
+            let array_ptr = unsafe { item_ptr.as_ptr().add(1).cast::<T>() };
 
             // Safety: `array_ptr` is a valid pointer to allocated memory for type `[T; hint]`.
-            // And `hint` is larger than `prev_count`
+            // And `hint` is larger than `guard.count`
             unsafe {
-                ptr::write(array_ptr.add(prev_count), one_more_elem);
+                ptr::write(array_ptr.add(guard.count), one_more_elem);
             }
 
-            let count =
-                iter.by_ref()
-                    .take(hint - prev_count - 1)
-                    .fold(prev_count + 1, |idx, item| {
-                        // Safety: `array_ptr` is a valid pointer to allocated memory for type `[T; hint]`.
-                        unsafe { ptr::write(array_ptr.add(idx), item) };
-                        idx + 1
-                    });
+            let mut sub_iter = iter.by_ref().take(hint - guard.count - 1);
 
-            // Safety: `item_ptr` is a valid pointer to allocated memory for type `DropItem<[T; hint]>`.
-            // And `count` is not larger than `hint`.
-            // And exactly `count` values were initialized.
-            let item = unsafe { DropItem::init_slice(item_ptr, count) };
-            guard.prev_item = Some(NonNull::from(item));
+            for idx in guard.count + 1.. {
+                if Layout::new::<Option<T>>() == Layout::new::<T>() {
+                    // Putting elements directly into the array.
+                    if in_place(array_ptr.add(idx).cast(), &mut sub_iter, Iterator::next).is_none()
+                    {
+                        break;
+                    }
+                } else {
+                    match sub_iter.next() {
+                        None => break,
+                        Some(elem) => ptr::write(array_ptr.add(idx), elem),
+                    }
+                }
+                guard.count = idx + 1;
+            }
         }
     }
 
@@ -327,51 +338,57 @@ where
     where
         I: Iterator<Item = T>,
     {
-        struct State<T> {
-            prev_slice: Option<NonNull<[T]>>,
+        struct Guard<T> {
+            ptr: Option<NonNull<T>>,
+            count: usize,
         }
 
-        impl<T> State<T> {
+        impl<T> Guard<T> {
             #[inline]
-            fn set<'a>(mut self) -> &'a mut [T] {
-                match self.prev_slice.as_mut() {
-                    Some(slice) => {
-                        // Safety: `slice` was properly initialized on previous iteration.
-                        unsafe { slice.as_mut() }
+            fn set<'a>(self) -> &'a mut [T] {
+                match self.ptr {
+                    Some(ptr) => {
+                        // Safety: `slice` was properly initialized.
+                        unsafe { core::slice::from_raw_parts_mut(ptr.as_ptr(), self.count) }
                     }
                     None => &mut [],
                 }
             }
         }
 
-        let mut state = State { prev_slice: None };
+        let mut guard = Guard {
+            ptr: None,
+            count: 0,
+        };
+        let mut last_layout = Layout::new::<()>();
 
         loop {
             let Some(one_more_elem) = iter.next() else {
-                    return Ok(state.set());
-                };
-
-            let prev_count = match state.prev_slice.as_mut() {
-                None => 0,
-                Some(slice) => {
-                    // Safety: `slice` was properly initialized on previous iteration.
-                    slice.len()
-                }
+                return Ok(guard.set());
             };
 
             let (lower, _) = iter.size_hint();
             let Some(hint) = lower.checked_add(1) else {
-                return Err(err(state.set(), one_more_elem, None));
+                return Err(err(guard.set(), one_more_elem, None));
             };
-            let hint = hint.max(prev_count);
-            let mut hint = hint.saturating_add(prev_count);
+            let hint = hint.max(guard.count);
+            let mut hint = hint.saturating_add(guard.count);
 
             let Ok(array_layout) = Layout::array::<T>(hint) else {
-                return Err(err(state.set(), one_more_elem, None));
+                return Err(err(guard.set(), one_more_elem, None));
             };
-            let Ok(ptr) = self.alloc.allocate(array_layout) else {
-                return Err(err(state.set(), one_more_elem, Some(array_layout)));
+
+            let res = match guard.ptr {
+                None => self.alloc.allocate(array_layout),
+                Some(ptr) => self.alloc.grow(ptr.cast(), last_layout, array_layout),
             };
+
+            let Ok(ptr) = res else {
+                return Err(err(guard.set(), one_more_elem, Some(array_layout)));
+            };
+            last_layout = array_layout;
+
+            guard.ptr = Some(ptr.cast());
 
             let len = ptr.len();
             if len > array_layout.size() {
@@ -382,36 +399,31 @@ where
             }
 
             let array_ptr = ptr.as_ptr().cast::<T>();
-
-            if let Some(slice) = state.prev_slice.take() {
-                // Safety: `array_ptr` is a valid pointer to allocated memory for type `[T; hint]`.
-                // And `hint` is larger than `prev_count` that is size of the `slice`.
-                unsafe {
-                    copy_nonoverlapping(slice.as_ptr() as *const T, array_ptr, prev_count);
-                }
-            }
-
             // Safety: `array_ptr` is a valid pointer to allocated memory for type `[T; hint]`.
-            // And `hint` is larger than `prev_count`
+            // And `hint` is larger than `guard.count`
             unsafe {
-                ptr::write(array_ptr.add(prev_count), one_more_elem);
+                ptr::write(array_ptr.add(guard.count), one_more_elem);
             }
 
-            let count =
-                iter.by_ref()
-                    .take(hint - prev_count - 1)
-                    .fold(prev_count + 1, |idx, item| {
-                        // Safety: `array_ptr` is a valid pointer to allocated memory for type `[T; hint]`.
-                        unsafe { ptr::write(array_ptr.add(idx), item) };
-                        idx + 1
-                    });
+            guard.count += 1;
 
-            // Safety: `array_ptr` is a valid pointer to allocated memory for type `[T; hint]`.
-            // And `count` is not larger than `hint`.
-            // And exactly `count` values were initialized.
-            let slice =
-                unsafe { NonNull::new_unchecked(slice_from_raw_parts_mut(array_ptr, count)) };
-            state.prev_slice = Some(slice);
+            let mut sub_iter = iter.by_ref().take(hint - guard.count - 1);
+
+            for idx in guard.count.. {
+                if Layout::new::<Option<T>>() == Layout::new::<T>() {
+                    // Putting elements directly into the array.
+                    if in_place(array_ptr.add(idx).cast(), &mut sub_iter, Iterator::next).is_none()
+                    {
+                        break;
+                    }
+                } else {
+                    match sub_iter.next() {
+                        None => break,
+                        Some(elem) => ptr::write(array_ptr.add(idx), elem),
+                    }
+                }
+                guard.count = idx + 1;
+            }
         }
     }
 
@@ -455,13 +467,18 @@ where
     S: From<&'a mut [T]>,
 {
     /// Allocates memory for a value and moves `value` into the memory.
-    /// Returns reference to the emplaced value.
     /// If allocation fails, returns `Err(value)`.
+    /// On success returns reference to the emplaced value.
     #[inline]
     pub fn try_value(&self, value: T) -> Result<R, T> {
         unsafe {
-            self.blink
-                ._try_emplace(value, identity, self.no_drop, |init, _| init)
+            self.blink._try_emplace(
+                value,
+                Ok::<_, ManuallyDrop<Infallible>>,
+                self.no_drop,
+                |never| match never {},
+                |init, _| init,
+            )
         }
         .map(R::from)
     }
@@ -473,10 +490,13 @@ where
     #[inline]
     pub fn value(&self, value: T) -> R {
         unsafe {
-            self.blink
-                ._try_emplace(value, identity, self.no_drop, |_, layout| {
-                    handle_alloc_error(layout)
-                })
+            self.blink._try_emplace(
+                value,
+                Ok::<_, ManuallyDrop<Infallible>>,
+                self.no_drop,
+                identity,
+                |_, layout| handle_alloc_error(layout),
+            )
         }
         .safe_ok()
         .into()
@@ -487,13 +507,18 @@ where
     /// Returns reference to the value.
     /// If allocation fails, returns error with closure.
     #[inline]
-    pub fn try_value_with<F>(&self, f: F) -> Result<R, F>
+    pub fn try_with<F>(&self, f: F) -> Result<R, F>
     where
         F: FnOnce() -> T,
     {
         unsafe {
-            self.blink
-                ._try_emplace(f, call_once, self.no_drop, |f, _| f)
+            self.blink._try_emplace(
+                f,
+                |f| Ok::<_, ManuallyDrop<Infallible>>(f()),
+                self.no_drop,
+                never,
+                |f, _| f,
+            )
         }
         .map(R::from)
     }
@@ -506,18 +531,66 @@ where
     /// This version works only for `'static` values.
     #[cfg(all(feature = "oom_handling", not(no_global_oom_handling)))]
     #[inline]
-    pub fn value_with<F>(&self, f: F) -> R
+    pub fn with<F>(&self, f: F) -> R
     where
         F: FnOnce() -> T,
     {
         unsafe {
-            self.blink
-                ._try_emplace(f, call_once, self.no_drop, |_, layout| {
-                    handle_alloc_error(layout)
-                })
+            self.blink._try_emplace(
+                f,
+                |f| Ok::<_, ManuallyDrop<Infallible>>(f()),
+                self.no_drop,
+                never,
+                |_, layout| handle_alloc_error(layout),
+            )
         }
         .safe_ok()
         .into()
+    }
+    /// Allocates memory for a value.
+    /// If allocation fails, returns error with closure.
+    /// On success invokes closure and initialize the value.
+    /// If closure fails, returns the error.
+    /// Returns reference to the value.
+    #[inline]
+    pub fn try_with_fallible<F, E>(&self, f: F) -> Result<R, Result<E, F>>
+    where
+        F: FnOnce() -> Result<T, E>,
+        E: 'a,
+    {
+        unsafe {
+            self.blink._try_emplace(
+                f,
+                |f| f().map_err(ManuallyDrop::new),
+                self.no_drop,
+                |err| Ok(err),
+                |f, _| Err(f),
+            )
+        }
+        .map(R::from)
+    }
+
+    /// Allocates memory for a value.
+    /// If allocation fails, returns error with closure.
+    /// On success invokes closure and initialize the value.
+    /// If closure fails, returns the error.
+    /// Returns reference to the value.
+    #[inline]
+    pub fn with_fallible<F, E>(&self, f: F) -> Result<R, E>
+    where
+        F: FnOnce() -> Result<T, E>,
+        E: 'a,
+    {
+        unsafe {
+            self.blink._try_emplace(
+                f,
+                |f| f().map_err(ManuallyDrop::new),
+                self.no_drop,
+                identity,
+                |_, layout| handle_alloc_error(layout),
+            )
+        }
+        .map(R::from)
     }
 
     /// Allocates memory for an array and initializes it with
@@ -743,9 +816,6 @@ where
 }
 
 #[inline]
-fn call_once<F, R>(f: F) -> R
-where
-    F: FnOnce() -> R,
-{
-    f()
+fn never<T>(never: Infallible) -> T {
+    match never {}
 }

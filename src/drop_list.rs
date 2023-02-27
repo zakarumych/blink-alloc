@@ -7,6 +7,8 @@ use core::{
     ptr::{self, addr_of_mut, slice_from_raw_parts_mut, NonNull},
 };
 
+use crate::in_place;
+
 /// Single drop item.
 /// Drops associated value when invoked.
 struct Drops {
@@ -36,8 +38,13 @@ pub struct DropItem<T: ?Sized> {
 }
 
 impl<T> DropItem<T> {
-    pub unsafe fn init_value<'a>(ptr: *mut DropItem<T>) -> &'a mut Self {
-        let drops_ptr = addr_of_mut!((*ptr).drops);
+    pub unsafe fn init_value<'a, I>(
+        mut ptr: NonNull<DropItem<T>>,
+        init: I,
+        f: impl FnOnce(I) -> T,
+    ) -> &'a mut Self {
+        let drops_ptr = addr_of_mut!((*ptr.as_ptr()).drops);
+        in_place(addr_of_mut!((*ptr.as_ptr()).value), init, f);
         ptr::write(
             drops_ptr,
             Drops {
@@ -46,27 +53,29 @@ impl<T> DropItem<T> {
                 next: None,
             },
         );
-        &mut *ptr
+        ptr.as_mut()
     }
 }
 
-impl<T> DropItem<[T]> {
-    pub unsafe fn init_slice<'a>(ptr: *mut DropItem<[T; 0]>, count: usize) -> &'a mut Self {
+impl<T> DropItem<[T; 0]> {
+    pub unsafe fn init_slice<'a>(
+        mut ptr: NonNull<DropItem<[T; 0]>>,
+        count: usize,
+    ) -> (&'a mut Self, &'a mut [T]) {
         debug_assert_ne!(
             count, 0,
             "DropItem<[T]> should not be constructed with count 0"
         );
-
-        let drops_ptr = addr_of_mut!((*ptr).drops);
         ptr::write(
-            drops_ptr,
+            ptr.as_ptr().cast(),
             Drops {
                 count,
                 drop: drop_from_item::<T>,
                 next: None,
             },
         );
-        &mut *(slice_from_raw_parts_mut(ptr, count) as *mut Self)
+        let slice = core::slice::from_raw_parts_mut(ptr.as_ptr().add(1).cast(), count);
+        (ptr.as_mut(), slice)
     }
 }
 
