@@ -128,11 +128,15 @@ at your option.
 
 Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in the work by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.
 
-<!-- [`BlinkAlloc`]: -->
-<!-- [`SyncBlinkAlloc`]: -->
-<!-- [`LocalBlinkAlloc`]: -->
-<!-- [`BlinkAllocCache`]: -->
-[`Allocator`]: allocator_api2::Allocator
+[`Vec::shrink_to`]: https://doc.rust-lang.org/alloc/vec/struct.Vec.html#method.shrink_to
+[`Vec::shrink_to_fit`]: https://doc.rust-lang.org/alloc/vec/struct.Vec.html#method.shrink_to_fit
+[`Vec::push`]: https://doc.rust-lang.org/alloc/vec/struct.Vec.html#method.push
+[`Vec`]: https://doc.rust-lang.org/alloc/vec/struct.Vec.html
+[`BlinkAlloc`]: https://docs.rs/blink-alloc/latest/blink_alloc/struct.BlinkAlloc.html
+[`SyncBlinkAlloc`]: https://docs.rs/blink-alloc/latest/blink_alloc/struct.SyncBlinkAlloc.html
+[`LocalBlinkAlloc`]: https://docs.rs/blink-alloc/latest/blink_alloc/struct.LocalBlinkAlloc.html
+[`BlinkAllocCache`]: https://docs.rs/blink-alloc/latest/blink_alloc/struct.BlinkAllocCache.html
+[`Allocator`]: https://docs.rs/allocator-api2/latest/allocator_api2/
 [`allocator_api`]: https://doc.rust-lang.org/beta/unstable-book/library-features/allocator-api.html
 [`core::alloc::Allocator`]: https://doc.rust-lang.org/core/alloc/trait.Allocator.html
 [`Vec`]: https://doc.rust-lang.org/alloc/vec/struct.Vec.html

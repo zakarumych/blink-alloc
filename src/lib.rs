@@ -34,6 +34,9 @@ mod local;
 #[cfg(feature = "sync")]
 mod sync;
 
+#[cfg(all(feature = "sync", feature = "alloc"))]
+mod cache;
+
 #[cfg(test)]
 mod tests;
 
@@ -42,12 +45,15 @@ mod oom;
 
 pub use self::{
     api::BlinkAllocator,
-    blink::{Blink, Emplace},
+    blink::{Blink, Emplace, SendBlink},
     local::BlinkAlloc,
 };
 
 #[cfg(feature = "sync")]
 pub use self::sync::{LocalBlinkAlloc, SyncBlinkAlloc};
+
+#[cfg(all(feature = "sync", feature = "alloc"))]
+pub use self::cache::BlinkAllocCache;
 
 pub(crate) trait ResultExt<T> {
     fn safe_ok(self) -> T;

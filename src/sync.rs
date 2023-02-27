@@ -23,21 +23,21 @@ with_global_default! {
     /// allocates memory in growing chunks and serve allocations from them.
     /// When chunk is exhausted a new larger chunk is allocated.
     ///
-    /// Deallocation is no-op. `BlinkAllocator` can be reset
+    /// Deallocation is no-op. [`BlinkAllocator`] can be reset
     /// to free all chunks except the last one, that will be reused.
     ///
     /// Blink allocator aims to allocate a chunk large enough to
     /// serve all allocations between resets.
     ///
-    /// A shared and mutable reference to the `BlinkAlloc` implement
-    /// `Allocator` trait.
-    /// When "nightly" feature is enabled, `Allocator` trait is
-    /// `core::alloc::Allocator`. Otherwise it is duplicated trait defined
-    /// in this crate.
+    /// A shared and mutable reference to the [`SyncBlinkAlloc`] implement
+    /// [`Allocator`] trait.
+    /// When "nightly" feature is enabled, [`Allocator`] trait is
+    /// [`core::alloc::Allocator`]. Otherwise it is duplicated trait defined
+    /// in [`allocator-api2`](allocator_api2).
     ///
     /// Resetting blink allocator requires mutable borrow, so it is not possible
     /// to do while shared borrow is alive. That matches requirement of
-    /// `Allocator` trait - while `Allocator` instance
+    /// [`Allocator`] trait - while [`Allocator`] instance
     /// (a shared reference to `BlinkAlloc`) or any of its clones are alive,
     /// allocated memory must be valid.
     ///
@@ -164,17 +164,18 @@ where
         }
     }
 
-    /// Creates a new thread-local blink allocator
+    /// Creates a new thread-local blink allocator proxy
     /// that borrows from this multi-threaded allocator.
     ///
-    /// The local allocator works faster by not requiring atomic operations.
-    /// And it can be recreated without resetting the multi-threaded allocator.
-    /// Allowing `SyncBlinkAlloc` to be warm-up and serve all allocations
+    /// The local proxy allocator works faster and
+    /// allows more consistent memory reuse.
+    /// It can be recreated without resetting the multi-threaded allocator,
+    /// allowing [`SyncBlinkAlloc`] to be warm-up and serve all allocations
     /// from a single chunk without ever blocking.
     ///
     /// Best works for fork-join style of parallelism.
-    /// Create a local allocator for each thread/task and drop on join.
-    /// Reset after all threads/tasks are joined.
+    /// Create a local allocator for each thread/task.
+    /// Reset after all threads/tasks are finished.
     ///
     /// # Examples
     ///
@@ -185,15 +186,19 @@ where
     /// # #[cfg(feature = "nightly")]
     /// # fn main() {
     /// let mut blink = SyncBlinkAlloc::new();
-    /// for i in 0..16 {
-    ///     std::thread::scope(|_| {
-    ///         let blink = blink.local();
-    ///         let mut vec = Vec::new_in(&blink);
-    ///         vec.push(i);
-    ///         vec.extend(i * 2..i * 3);
-    ///     });
+    /// for _ in 0..100 {
+    ///     for i in 0..16 {
+    ///         std::thread::scope(|_| {
+    ///             let blink = blink.local();
+    ///             let mut vec = Vec::new_in(&blink);
+    ///             vec.push(i);
+    ///             for j in i*2..i*30 {
+    ///                 vec.push(j); // Proxy will allocate enough memory to grow vec without reallocating on 2nd iteration and later.
+    ///             }
+    ///         });
+    ///     }
+    ///     blink.reset();
     /// }
-    /// blink.reset();
     /// # }
     /// # #[cfg(not(feature = "nightly"))]
     /// # fn main() {}
@@ -270,6 +275,12 @@ where
 }
 
 with_global_default! {
+    /// Thread-local proxy for [`SyncBlinkAlloc`].
+    ///
+    /// Using proxy can yield better performance when
+    /// it is possible to create proxy once to use for many allocations.
+    ///
+    /// See [`SyncBlinkAlloc::local`] for more details.
     pub struct LocalBlinkAlloc<'a, A: Allocator = +Global> {
         arena: ArenaLocal,
         shared: &'a SyncBlinkAlloc<A>,

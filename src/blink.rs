@@ -8,8 +8,6 @@ use core::{
     ptr::{self, NonNull},
 };
 
-use allocator_api2::Allocator;
-
 #[cfg(feature = "alloc")]
 use allocator_api2::Global;
 
@@ -157,7 +155,6 @@ impl<A> Blink<A> {
 
 impl<A> Blink<A>
 where
-    for<'a> &'a A: Allocator,
     A: BlinkAllocator,
 {
     /// Drops all allocated values.
@@ -1026,6 +1023,49 @@ where
             no_drop: false,
             marker: PhantomData,
         }
+    }
+}
+
+/// Wrapper for [`Blink`] that implements [`Send`].
+///
+/// Normally it is impossible to send [`Blink`] to another thread
+/// due to the fact that it will drop non-sendable types on reset.
+///
+/// This wrapper resets [`Blink`] on construction and thus safe to send.
+///
+/// # Example
+///
+/// ```
+/// # use blink_alloc::{SendBlink, Blink};
+/// let mut blink = Blink::new();
+/// let rc = std::rc::Rc::new(42);
+/// let rc = blink.put(rc);
+/// assert_eq!(**rc, 42);
+/// let send_blink = SendBlink::new(blink);
+///
+/// std::thread::scope(move |_| {
+///     let mut blink = send_blink.into_inner();
+///     blink.put(42);
+/// });
+/// ````
+pub struct SendBlink<A> {
+    blink: Blink<A>,
+}
+
+impl<A> SendBlink<A>
+where
+    A: BlinkAllocator,
+{
+    /// Creates new [`SendBlink`] from [`Blink`].
+    /// Resets the blink allocator to avoid dropping non-sendable types on other threads.
+    pub fn new(mut blink: Blink<A>) -> Self {
+        blink.reset();
+        SendBlink { blink }
+    }
+
+    /// Returns inner [`Blink`] value.
+    pub fn into_inner(self) -> Blink<A> {
+        self.blink
     }
 }
 

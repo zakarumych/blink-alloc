@@ -766,6 +766,9 @@ pub struct ArenaLocal {
     min_chunk_size: Cell<usize>,
 }
 
+/// It is safe to send `ArenaLocal` between threads.
+unsafe impl Send for ArenaLocal {}
+
 impl Drop for ArenaLocal {
     #[inline]
     fn drop(&mut self) {

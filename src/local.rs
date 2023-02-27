@@ -30,7 +30,7 @@ with_global_default! {
     /// [`Allocator`] trait.
     /// When "nightly" feature is enabled, [`Allocator`] trait is
     /// [`core::alloc::Allocator`]. Otherwise it is duplicated trait defined
-    /// in this crate.
+    /// in [`allocator-api2`](allocator_api2).
     ///
     /// Resetting blink allocator requires mutable borrow, so it is not possible
     /// to do while shared borrow is alive. That matches requirement of
@@ -40,7 +40,7 @@ with_global_default! {
     ///
     /// This version of blink-allocator is single-threaded. It is possible
     /// to send to another thread, but cannot be shared.
-    /// Internally it uses `Cell` for interior mutability and requires
+    /// Internally it uses [`Cell`](core::cell::Cell) for interior mutability and requires
     /// that state cannot be changed from another thread.
     ///
     #[cfg_attr(feature = "sync", doc = "For multi-threaded version see [`SyncBlinkAlloc`](crate::sync::SyncBlinkAlloc).")]
