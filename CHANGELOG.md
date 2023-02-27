@@ -12,3 +12,5 @@ Initial implementation of blink-allocators.
 `SyncBlinkAlloc` for multi-threaded usage.
 `LocalBlinkAlloc` thread-local proxy for `SyncBlinkAlloc`.
 `Blink` - friendly allocator adaptor for use without collections.
+`BlinkAllocCache` - a cache of `BlinkAlloc` instances to keep them warm
+and use from multiple threads.
