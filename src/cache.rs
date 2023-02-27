@@ -97,10 +97,10 @@ where
 
         Self::flush(&mut inner);
 
-        return inner
+        inner
             .pop_array
             .pop()
-            .map(|cell| ManuallyDrop::into_inner(cell.into_inner()));
+            .map(|cell| ManuallyDrop::into_inner(cell.into_inner()))
     }
 
     pub fn push(&self, blink: BlinkAlloc<A>) {
