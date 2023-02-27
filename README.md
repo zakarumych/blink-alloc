@@ -109,6 +109,44 @@ and works only on nightly.
 Once [`Allocator`] trait is stable the feature will do nothing and
 removed in next major release.
 
+# Examples
+
+```rust
+use blink_alloc::Blink;
+
+fn main() {
+    let mut blink = Blink::new();
+
+    let x = blink.put(42);
+    assert_eq!(*x, 42);
+
+    let string = blink.copy_str("Hello world");
+    string.make_ascii_lowercase();
+    assert_eq!(string, "hello world");
+
+    let slice = blink.emplace().from_iter((0..10).filter(|x| x % 3 != 0));
+    assert_eq!(&*slice, &[1, 2, 4, 5, 7, 8]);
+    blink.reset();
+}
+```
+
+```rust
+#![cfg_attr(feature = "nightly", feature(allocator_api))]
+use blink_alloc::BlinkAlloc;
+
+fn main() {
+    #[cfg(feature = "nightly")]
+    {
+        let mut blink = BlinkAlloc::new();
+        let mut vec = Vec::new_in(&blink);
+        vec.extend((1..10).map(|x| x * 3 - 2));
+
+        drop(vec);
+        blink.reset();
+    }
+}
+```
+
 # No-std
 
 This crate supports `no_std` environment.

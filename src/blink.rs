@@ -105,7 +105,7 @@ impl Blink<BlinkAlloc<Global>> {
     /// use blink_alloc::Blink;
     /// let mut blink = Blink::new();
     ///
-    /// blink.emplace().value(42);
+    /// blink.put(42);
     /// # }
     /// ```
     pub const fn new() -> Self {
@@ -124,7 +124,7 @@ impl Blink<BlinkAlloc<Global>> {
     /// use blink_alloc::Blink;
     /// let mut blink = Blink::with_chunk_size(16);
     ///
-    /// blink.emplace().value(42);
+    /// blink.put(42);
     /// # }
     pub const fn with_chunk_size(capacity: usize) -> Self {
         Blink::new_in(BlinkAlloc::with_chunk_size(capacity))
@@ -169,7 +169,7 @@ where
     /// Otherwise copies the slice into the allocated memory and returns
     /// mutable reference to the copy.
     #[inline]
-    unsafe fn _try_slice_copy<'a, T, E>(
+    unsafe fn _try_copy_slice<'a, T, E>(
         &'a self,
         slice: &[T],
         alloc_err: impl FnOnce(Layout) -> E,
@@ -594,8 +594,6 @@ where
     /// On success invokes closure and initialize the value.
     /// Returns reference to the value.
     /// If allocation fails, diverges.
-    ///
-    /// This version works only for `'static` values.
     #[cfg(all(feature = "oom_handling", not(no_global_oom_handling)))]
     #[inline]
     pub fn with<F>(&self, f: F) -> R
@@ -671,7 +669,7 @@ where
     /// values from iterator.
     /// Uses iterator hints to allocate memory.
     /// If iterator yields more values than allocated array can hold,
-    /// new larger array is allocated and values are copied.
+    /// grows allocation and moves next values to extended array.
     /// Repeats until iterator is exhausted.
     /// Works best on iterators that report accurate upper size hint.
     /// Grows allocated memory potentially reducing number of allocations
@@ -696,7 +694,7 @@ where
     /// values from iterator.
     /// Uses iterator hints to allocate memory.
     /// If iterator yields more values than allocated array can hold,
-    /// new larger array is allocated and values are copied.
+    /// grows allocation and moves next values to extended array.
     /// Repeats until iterator is exhausted.
     /// Works best on iterators that report accurate upper size hint.
     /// Grows allocated memory potentially reducing number of allocations
@@ -792,11 +790,11 @@ where
     #[cfg(all(feature = "oom_handling", not(no_global_oom_handling)))]
     #[inline]
     #[allow(clippy::mut_from_ref)]
-    pub fn slice_copy<T>(&self, slice: &[T]) -> &mut [T]
+    pub fn copy_slice<T>(&self, slice: &[T]) -> &mut [T]
     where
         T: Copy,
     {
-        let result = unsafe { self._try_slice_copy(slice, handle_alloc_error) };
+        let result = unsafe { self._try_copy_slice(slice, handle_alloc_error) };
         match result {
             Ok(slice) => slice,
             Err(never) => never,
@@ -808,11 +806,11 @@ where
     /// and returns reference to the new slice.
     /// If allocation fails, returns `None`.
     #[inline]
-    pub fn try_slice_copy<T>(&self, slice: &[T]) -> Option<&mut [T]>
+    pub fn try_copy_slice<T>(&self, slice: &[T]) -> Option<&mut [T]>
     where
         T: Copy,
     {
-        unsafe { self._try_slice_copy(slice, |_| ()) }.ok()
+        unsafe { self._try_copy_slice(slice, |_| ()) }.ok()
     }
 
     /// Copies the slice to the allocated memory
@@ -820,8 +818,8 @@ where
     #[cfg(all(feature = "oom_handling", not(no_global_oom_handling)))]
     #[inline]
     #[allow(clippy::mut_from_ref)]
-    pub fn str_copy(&self, string: &str) -> &mut str {
-        let result = unsafe { self._try_slice_copy(string.as_bytes(), handle_alloc_error) };
+    pub fn copy_str(&self, string: &str) -> &mut str {
+        let result = unsafe { self._try_copy_slice(string.as_bytes(), handle_alloc_error) };
         match result {
             Ok(slice) => unsafe { core::str::from_utf8_unchecked_mut(slice) },
             Err(never) => never,
@@ -833,8 +831,8 @@ where
     /// and returns reference to the new slice.
     /// If allocation fails, returns `None`.
     #[inline]
-    pub fn try_str_copy(&self, string: &str) -> Option<&mut str> {
-        unsafe { self._try_slice_copy(string.as_bytes(), |_| ()) }
+    pub fn try_copy_str(&self, string: &str) -> Option<&mut str> {
+        unsafe { self._try_copy_slice(string.as_bytes(), |_| ()) }
             .ok()
             .map(|bytes| unsafe { core::str::from_utf8_unchecked_mut(bytes) })
     }
@@ -860,7 +858,7 @@ where
     /// ```
     /// # use blink_alloc::Blink;
     /// let mut blink = Blink::new();
-    /// let foo = blink.emplace().value(42);
+    /// let foo = blink.put(42);
     /// assert_eq!(*foo, 42);
     /// *foo = 24;
     /// blink.reset();
