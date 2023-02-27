@@ -89,9 +89,12 @@ impl CasPtr for Cell<*mut u8> {
         _: Ordering,
         _: Ordering,
     ) -> Result<(), *mut u8> {
-        debug_assert_eq!(old, self.get());
-        self.set(new);
-        Ok(())
+        if old == self.get() {
+            self.set(new);
+            Ok(())
+        } else {
+            Err(self.get())
+        }
     }
 
     #[inline]
@@ -102,7 +105,11 @@ impl CasPtr for Cell<*mut u8> {
         _: Ordering,
         _: Ordering,
     ) -> Result<(), *mut u8> {
-        debug_assert_eq!(old, self.get());
+        debug_assert_eq!(
+            old,
+            self.get(),
+            "Must be used only in loop where `old` is last loaded value"
+        );
         self.set(new);
         Ok(())
     }
@@ -179,13 +186,13 @@ impl<T: Copy> Mut<T> for &Cell<T> {
 }
 
 /// 0.5 KB. Initial chunk size.
-const CHUNK_START_SIZE: usize = 512;
+const CHUNK_START_SIZE: usize = 256;
 
 /// 64 KB. After this size, new chunk size is not aligned to next power of two.
-const CHUNK_POWER_OF_TWO_THRESHOLD: usize = 1 << 16;
+const CHUNK_POWER_OF_TWO_THRESHOLD: usize = 1 << 12;
 
 /// 1/8 KB. Minimum chunk size growth step.
-const CHUNK_MIN_GROW_STEP: usize = 128;
+const CHUNK_MIN_GROW_STEP: usize = 64;
 
 #[repr(C)]
 pub struct ChunkHeader<T> {
@@ -483,15 +490,15 @@ where
 
             let end_addr = sptr::Strict::addr(me.end);
             if next_addr > end_addr {
-                // Impossible to grow or reallocate.
-                return Err((aligned_addr - end_addr).checked_add(me.cap()));
+                // Not enough space.
+                return Err((next_addr - end_addr).checked_add(me.cap()));
             }
 
             let aligned = unsafe { ptr.as_ptr().add(aligned_addr - addr) };
             let next = unsafe { aligned.add(new_layout.size()) };
 
             let result = me.cursor.compare_exchange(
-                ptr.as_ptr(),
+                old_end,
                 next,
                 Ordering::Acquire, // Acquire more memory.
                 Ordering::Relaxed,
@@ -585,6 +592,8 @@ where
     T: CasPtr,
     A: Allocator,
 {
+    chunk_size += size_of::<ChunkHeader<T>>();
+
     // Grow size exponentially until a threshold.
     if chunk_size < CHUNK_POWER_OF_TWO_THRESHOLD {
         chunk_size = chunk_size.next_power_of_two();

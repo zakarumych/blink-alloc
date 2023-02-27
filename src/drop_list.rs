@@ -4,10 +4,9 @@
 
 use core::{
     cell::Cell,
+    mem::MaybeUninit,
     ptr::{self, addr_of_mut, slice_from_raw_parts_mut, NonNull},
 };
-
-use crate::in_place;
 
 /// Single drop item.
 /// Drops associated value when invoked.
@@ -41,10 +40,10 @@ impl<T> DropItem<T> {
     pub unsafe fn init_value<'a, I>(
         mut ptr: NonNull<DropItem<T>>,
         init: I,
-        f: impl FnOnce(I) -> T,
+        f: impl FnOnce(&mut MaybeUninit<T>, I),
     ) -> &'a mut Self {
         let drops_ptr = addr_of_mut!((*ptr.as_ptr()).drops);
-        in_place(addr_of_mut!((*ptr.as_ptr()).value), init, f);
+        f(&mut *addr_of_mut!((*ptr.as_ptr()).value).cast(), init);
         ptr::write(
             drops_ptr,
             Drops {

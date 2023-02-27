@@ -1,4 +1,5 @@
-#[cfg(all(feature = "oom_handling", not(no_global_oom_handling)))]
+use core::convert::Infallible;
+
 #[cfg_attr(feature = "alloc", inline(always))]
 #[cfg_attr(not(feature = "alloc"), inline(never))]
 #[cold]
@@ -10,9 +11,8 @@ pub(crate) fn handle_alloc_error(layout: core::alloc::Layout) -> ! {
     panic!("allocation of {:?} failed", layout);
 }
 
-#[cfg(all(feature = "oom_handling", not(no_global_oom_handling)))]
 #[inline(never)]
 #[cold]
-pub(crate) fn size_overflow() -> ! {
+pub(crate) fn size_overflow() -> Infallible {
     panic!("Size overflow")
 }

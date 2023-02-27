@@ -43,9 +43,9 @@ with_global_default! {
     /// Internally it uses `Cell` for interior mutability and requires
     /// that state cannot be changed from another thread.
     ///
-    /// For multi-threaded version see [`SyncBlinkAlloc`].
-    ///
-    /// [`SyncBlinkAlloc`]: crate::sync::SyncBlinkAlloc
+    #[cfg_attr(feature = "sync", doc = "For multi-threaded version see [`SyncBlinkAlloc`](crate::sync::SyncBlinkAlloc).")]
+    #[cfg_attr(not(feature = "sync"), doc = "For multi-threaded version see `SyncBlinkAlloc`.")]
+    /// Requires `"sync"` feature.
     ///
     /// # Example
     ///
