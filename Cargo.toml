@@ -13,11 +13,13 @@ keywords = ["allocator", "arena", "concurrent", "drop"]
 
 
 [features]
-nightly = []
-alloc = []
+nightly = ["allocator-api2/nightly"]
+alloc = ["allocator-api2/alloc"]
 oom_handling = []
 default = ["alloc", "oom_handling"]
+sync = ["parking_lot"]
 
 [dependencies]
-parking_lot = "0.12"
+parking_lot = {  version = "0.12", optional = true }
 sptr = "0.3"
+allocator-api2 = { version = "*", path = "../allocator-api2", default-features = false }

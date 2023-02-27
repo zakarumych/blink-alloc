@@ -52,7 +52,10 @@ impl<T> DropItem<T> {
 
 impl<T> DropItem<[T]> {
     pub unsafe fn init_slice<'a>(ptr: *mut DropItem<[T; 0]>, count: usize) -> &'a mut Self {
-        debug_assert_ne!(count, 0, "DropItem<[T]> should be constructed with count 0");
+        debug_assert_ne!(
+            count, 0,
+            "DropItem<[T]> should not be constructed with count 0"
+        );
 
         let drops_ptr = addr_of_mut!((*ptr).drops);
         ptr::write(
@@ -76,7 +79,7 @@ pub struct DropList {
 }
 
 impl DropList {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         DropList {
             root: Cell::new(None),
         }
