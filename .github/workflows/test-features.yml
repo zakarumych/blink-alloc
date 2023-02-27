@@ -1,4 +1,4 @@
-name: Check multiple toolchains
+name: Test feature permutations
 
 on:
   pull_request:
