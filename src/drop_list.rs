@@ -25,7 +25,7 @@ impl Drops {
     unsafe fn drop(&self) -> Option<NonNull<Self>> {
         // Safety: `DropItem` constructed as part of `DropItemValue<T>`.
         // And `drop` is set to `drop_in_place::<T>`.
-        unsafe { (self.drop)(NonNull::from(&*self), self.count) };
+        unsafe { (self.drop)(NonNull::from(self), self.count) };
         self.next
     }
 }

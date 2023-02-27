@@ -776,6 +776,7 @@ where
     /// Returns reference to the uninitialized value.
     #[cfg(all(feature = "oom_handling", not(no_global_oom_handling)))]
     #[inline]
+    #[allow(clippy::mut_from_ref)]
     pub fn uninit<T>(&self) -> &mut MaybeUninit<T> {
         let layout = Layout::new::<T>();
         let ptr = self
@@ -793,6 +794,7 @@ where
     /// and returns reference to the new slice.
     #[cfg(all(feature = "oom_handling", not(no_global_oom_handling)))]
     #[inline]
+    #[allow(clippy::mut_from_ref)]
     pub fn slice_copy<T>(&self, slice: &[T]) -> &mut [T]
     where
         T: Copy,
@@ -820,6 +822,7 @@ where
     /// and returns reference to the new slice.
     #[cfg(all(feature = "oom_handling", not(no_global_oom_handling)))]
     #[inline]
+    #[allow(clippy::mut_from_ref)]
     pub fn str_copy(&self, string: &str) -> &mut str {
         let result = unsafe { self._try_slice_copy(string.as_bytes(), handle_alloc_error) };
         match result {
@@ -985,6 +988,10 @@ where
     ///   Avoiding potential unsoundness in `Drop` implementation.
     /// * [`Blink::emplace_shared`]
     ///   Returns shared reference to emplaced values.
+    ///
+    /// # Safety
+    ///
+    /// Avoid incorrect usage. See below.
     ///
     /// # Incorrect usage example
     ///

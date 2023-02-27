@@ -8,6 +8,12 @@ use allocator_api2::Allocator;
 /// the very last allocated memory block.
 /// The [`reset`][BlinkAllocator::reset]
 /// method deallocates all memory allocated from this instance at once.
+///
+/// # Safety
+///
+/// Draws most requirements from [`Allocator`] super-trait.
+/// The [`reset`][BlinkAllocator::reset] method
+/// may invalidate currently allocated memory if allocator is not cloneable.
 pub unsafe trait BlinkAllocator: Allocator {
     /// Resets allocator potentially invalidating all allocations
     /// made from this instance.
