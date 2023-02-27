@@ -237,8 +237,7 @@ where
 
         // Safety:
         // Making layout of actual allocation.
-        let layout =
-            unsafe { Layout::from_size_align_unchecked(size as usize, align_of::<Self>()) };
+        let layout = unsafe { Layout::from_size_align_unchecked(size, align_of::<Self>()) };
 
         allocator.deallocate(chunk.cast(), layout);
         prev
@@ -250,7 +249,7 @@ where
     /// `ptr` must be aligned for `ChunkHeader` structure.
     /// `size` must be the size of the allocation.
     /// `size` must be large enough to fit `Chunk` structure.
-    unsafe fn init_chunk<'a>(slice: NonNull<[u8]>, prev: Option<NonNull<Self>>) -> NonNull<Self> {
+    unsafe fn init_chunk(slice: NonNull<[u8]>, prev: Option<NonNull<Self>>) -> NonNull<Self> {
         let len = slice.len();
         let header_ptr = slice.as_ptr().cast::<u8>();
         debug_assert!(is_aligned_to(
@@ -374,7 +373,7 @@ where
         // base is not null.
         unsafe {
             let slice = core::ptr::slice_from_raw_parts_mut(cursor, len);
-            return Ok(Ok(NonNull::new_unchecked(slice)));
+            Ok(Ok(NonNull::new_unchecked(slice)))
         }
     }
 
