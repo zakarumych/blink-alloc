@@ -1,11 +1,6 @@
 #![cfg(feature = "alloc")]
 
-use core::{
-    alloc::Layout,
-    cell::Cell,
-    mem::{size_of, size_of_val},
-    ptr::NonNull,
-};
+use core::{alloc::Layout, cell::Cell, mem::size_of, ptr::NonNull};
 
 use crate::{blink::Blink, local::BlinkAlloc};
 

@@ -758,6 +758,37 @@ where
         self.emplace().value(value)
     }
 
+    /// Allocates memory for a value.
+    /// Returns some reference to the uninitialized value.
+    /// If allocation fails, returns none.
+    #[inline]
+    pub fn try_uninit<T>(&self) -> Option<&mut MaybeUninit<T>> {
+        let layout = Layout::new::<T>();
+        let ptr = self.alloc.allocate(layout).ok()?;
+
+        // Safety:
+        // - `ptr` is valid for `layout`.
+        // - `MaybeUninit` is always initialized.
+        Some(unsafe { &mut *ptr.as_ptr().cast() })
+    }
+
+    /// Allocates memory for a value.
+    /// Returns reference to the uninitialized value.
+    #[cfg(all(feature = "oom_handling", not(no_global_oom_handling)))]
+    #[inline]
+    pub fn uninit<T>(&self) -> &mut MaybeUninit<T> {
+        let layout = Layout::new::<T>();
+        let ptr = self
+            .alloc
+            .allocate(layout)
+            .unwrap_or_else(|_| handle_alloc_error(layout));
+
+        // Safety:
+        // - `ptr` is valid for `layout`.
+        // - `MaybeUninit` is always initialized.
+        unsafe { &mut *ptr.as_ptr().cast() }
+    }
+
     /// Copies the slice to the allocated memory
     /// and returns reference to the new slice.
     #[cfg(all(feature = "oom_handling", not(no_global_oom_handling)))]
