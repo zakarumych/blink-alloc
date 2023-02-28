@@ -11,9 +11,8 @@ readme = "README.md"
 description = "Fast, concurrent, arena-based allocator with drop support"
 keywords = ["allocator", "arena", "concurrent", "drop"]
 
-
 [features]
-nightly = ["allocator-api2/nightly"]
+nightly = ["allocator-api2/nightly", "bumpalo/allocator_api"]
 alloc = ["allocator-api2/alloc"]
 oom_handling = []
 sync = ["parking_lot"]
@@ -24,6 +23,15 @@ default = ["alloc", "oom_handling"]
 parking_lot = {  version = "0.12", optional = true }
 sptr = "0.3"
 allocator-api2 = { version = "0.1.3", default-features = false }
+
+[dev-dependencies]
+criterion = "0.4"
+bumpalo = "3.7"
+
+[[bench]]
+name = "bench"
+harness = false
+required-features = ["alloc", "sync", "nightly"]
 
 [package.metadata.docs.rs]
 all-features = true

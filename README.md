@@ -6,7 +6,7 @@
 [![MIT/Apache](https://img.shields.io/badge/license-MIT%2FApache-blue.svg?style=for-the-badge)](./COPYING)
 ![loc](https://img.shields.io/tokei/lines/github/zakarumych/blink-alloc?style=for-the-badge)
 
-Blink-alloc is extremely fast allocator based on the common idea of
+Blink-alloc is [extremely fast](./BENCHMARKS.md) allocator based on the common idea of
 allocating linearly zipping a cursor through memory chunk and
 reset everything at once by setting cursor back to start.
 
