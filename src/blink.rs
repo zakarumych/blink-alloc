@@ -81,7 +81,7 @@ impl<'a, T: ?Sized> CoerceFromMut<'a, T> for &'a T {
 /// ```
 pub trait IteratorExt: Iterator {
     /// Collect iterator into blink allocator and return slice reference.
-    #[inline]
+    #[inline(always)]
     fn collect_to_blink(self, blink: &mut Blink) -> &mut [Self::Item]
     where
         Self: Sized,
@@ -90,7 +90,7 @@ pub trait IteratorExt: Iterator {
         blink.emplace().from_iter(self)
     }
 
-    #[inline]
+    #[inline(always)]
     fn collect_to_blink_shared(self, blink: &mut Blink) -> &[Self::Item]
     where
         Self: Sized,
@@ -98,7 +98,7 @@ pub trait IteratorExt: Iterator {
         blink.emplace_shared().from_iter(self)
     }
 
-    #[inline]
+    #[inline(always)]
     fn collect_to_blink_no_drop(self, blink: &mut Blink) -> &mut [Self::Item]
     where
         Self: Sized,
@@ -170,6 +170,7 @@ impl Blink<BlinkAlloc<Global>> {
     /// blink.put(42);
     /// # }
     /// ```
+    #[inline(always)]
     pub const fn new() -> Self {
         Blink::new_in(BlinkAlloc::new())
     }
@@ -188,6 +189,7 @@ impl Blink<BlinkAlloc<Global>> {
     ///
     /// blink.put(42);
     /// # }
+    #[inline(always)]
     pub const fn with_chunk_size(capacity: usize) -> Self {
         Blink::new_in(BlinkAlloc::with_chunk_size(capacity))
     }
@@ -195,6 +197,7 @@ impl Blink<BlinkAlloc<Global>> {
 
 impl<A> Blink<A> {
     /// Creates new blink instance with provided allocator instance.
+    #[inline(always)]
     pub const fn new_in(alloc: A) -> Self {
         Blink {
             drop_list: DropList::new(),
@@ -203,13 +206,15 @@ impl<A> Blink<A> {
     }
 
     /// Returns reference to allocator instance.
-    pub fn inner(&self) -> &A {
+    #[inline(always)]
+    pub fn allocator(&self) -> &A {
         &self.alloc
     }
 
     /// Drops all allocated values.
     ///
     /// Prefer to use `reset` method if associated allocator instance supports it.
+    #[inline(always)]
     pub fn drop_all(&mut self) {
         self.drop_list.reset();
     }
@@ -221,6 +226,7 @@ where
 {
     /// Drops all allocated values.
     /// And resets associated allocator instance.
+    #[inline(always)]
     pub fn reset(&mut self) {
         self.drop_list.reset();
         self.alloc.reset();
@@ -318,7 +324,7 @@ where
     /// If allocation fails, returns `Err(init)`.
     /// Otherwise calls closure consuming `init`
     /// and initializes memory with closure result.
-    #[inline]
+    #[inline(always)]
     unsafe fn _try_emplace<'a, T, I, G: 'a, E>(
         &'a self,
         init: I,
@@ -618,7 +624,7 @@ where
     /// If allocation fails, returns `Err(init)`.
     /// Otherwise calls closure consuming `init`
     /// and initializes memory with closure result.
-    #[inline]
+    #[inline(always)]
     unsafe fn _try_emplace_from_iter<'a, T: 'a, I, E>(
         &'a self,
         iter: I,
@@ -655,7 +661,7 @@ where
     /// Allocates memory for a value and moves `value` into the memory.
     /// If allocation fails, returns `Err(value)`.
     /// On success returns reference to the emplaced value.
-    #[inline]
+    #[inline(always)]
     pub fn try_value(&self, value: T) -> Result<R, T> {
         unsafe {
             self.blink._try_emplace(
@@ -675,7 +681,7 @@ where
     /// Returns reference to the emplaced value.
     /// If allocation fails, diverges.
     #[cfg(all(feature = "oom_handling", not(no_global_oom_handling)))]
-    #[inline]
+    #[inline(always)]
     pub fn value(&self, value: T) -> R {
         R::coerce(
             unsafe {
@@ -697,7 +703,7 @@ where
     /// On success invokes closure and initialize the value.
     /// Returns reference to the value.
     /// If allocation fails, returns error with closure.
-    #[inline]
+    #[inline(always)]
     pub fn try_with<F>(&self, f: F) -> Result<R, F>
     where
         F: FnOnce() -> T,
@@ -721,7 +727,7 @@ where
     /// Returns reference to the value.
     /// If allocation fails, diverges.
     #[cfg(all(feature = "oom_handling", not(no_global_oom_handling)))]
-    #[inline]
+    #[inline(always)]
     pub fn with<F>(&self, f: F) -> R
     where
         F: FnOnce() -> T,
@@ -746,7 +752,7 @@ where
     /// On success invokes closure and initialize the value.
     /// If closure fails, returns the error.
     /// Returns reference to the value.
-    #[inline]
+    #[inline(always)]
     pub fn try_with_fallible<F, E>(&self, f: F) -> Result<R, Result<E, F>>
     where
         F: FnOnce() -> Result<T, E>,
@@ -771,7 +777,7 @@ where
     /// On success invokes closure and initialize the value.
     /// If closure fails, returns the error.
     /// Returns reference to the value.
-    #[inline]
+    #[inline(always)]
     pub fn with_fallible<F, E>(&self, f: F) -> Result<R, E>
     where
         F: FnOnce() -> Result<T, E>,
@@ -802,7 +808,7 @@ where
     /// and copies.
     /// If allocation fails, returns slice of values emplaced so far.
     /// And one element that was taken from iterator and not emplaced.
-    #[inline]
+    #[inline(always)]
     pub fn try_from_iter<I>(&self, iter: I) -> Result<S, (S, T)>
     where
         I: IntoIterator<Item = T>,
@@ -830,7 +836,7 @@ where
     /// One last value that was taken from iterator and not emplaced
     /// is dropped before this method returns.
     #[cfg(all(feature = "oom_handling", not(no_global_oom_handling)))]
-    #[inline]
+    #[inline(always)]
     pub fn from_iter<I>(&self, iter: I) -> S
     where
         I: Iterator<Item = T>,
@@ -874,7 +880,7 @@ where
     /// // assert_eq!(*foo, 24); // Cannot compile. `foo` does not outlive reset.
     /// ```
     #[cfg(all(feature = "oom_handling", not(no_global_oom_handling)))]
-    #[inline]
+    #[inline(always)]
     pub fn put<T: 'static>(&self, value: T) -> &mut T {
         self.emplace().value(value)
     }
@@ -882,7 +888,7 @@ where
     /// Allocates memory for a value.
     /// Returns some reference to the uninitialized value.
     /// If allocation fails, returns none.
-    #[inline]
+    #[inline(always)]
     pub fn try_uninit<T>(&self) -> Option<&mut MaybeUninit<T>> {
         let layout = Layout::new::<T>();
         let ptr = self.alloc.allocate(layout).ok()?;
@@ -896,7 +902,7 @@ where
     /// Allocates memory for a value.
     /// Returns reference to the uninitialized value.
     #[cfg(all(feature = "oom_handling", not(no_global_oom_handling)))]
-    #[inline]
+    #[inline(always)]
     #[allow(clippy::mut_from_ref)]
     pub fn uninit<T>(&self) -> &mut MaybeUninit<T> {
         let layout = Layout::new::<T>();
@@ -914,7 +920,7 @@ where
     /// Copies the slice to the allocated memory
     /// and returns reference to the new slice.
     #[cfg(all(feature = "oom_handling", not(no_global_oom_handling)))]
-    #[inline]
+    #[inline(always)]
     #[allow(clippy::mut_from_ref)]
     pub fn copy_slice<T>(&self, slice: &[T]) -> &mut [T]
     where
@@ -931,7 +937,7 @@ where
     /// Copies the slice to the allocated memory
     /// and returns reference to the new slice.
     /// If allocation fails, returns `None`.
-    #[inline]
+    #[inline(always)]
     pub fn try_copy_slice<T>(&self, slice: &[T]) -> Option<&mut [T]>
     where
         T: Copy,
@@ -942,7 +948,7 @@ where
     /// Copies the slice to the allocated memory
     /// and returns reference to the new slice.
     #[cfg(all(feature = "oom_handling", not(no_global_oom_handling)))]
-    #[inline]
+    #[inline(always)]
     #[allow(clippy::mut_from_ref)]
     pub fn copy_str(&self, string: &str) -> &mut str {
         let result = unsafe { self._try_copy_slice(string.as_bytes(), handle_alloc_error) };
@@ -956,7 +962,7 @@ where
     /// Copies the slice to the allocated memory
     /// and returns reference to the new slice.
     /// If allocation fails, returns `None`.
-    #[inline]
+    #[inline(always)]
     pub fn try_copy_str(&self, string: &str) -> Option<&mut str> {
         unsafe { self._try_copy_slice(string.as_bytes(), |_| ()) }
             .ok()
@@ -990,7 +996,7 @@ where
     /// blink.reset();
     /// // assert_eq!(*foo, 24); // Cannot compile. `foo` does not outlive reset.
     /// ```
-    #[inline]
+    #[inline(always)]
     pub fn emplace<T: 'static>(&self) -> Emplace<A, T> {
         Emplace {
             blink: self,
@@ -1036,7 +1042,7 @@ where
     /// blink.reset();
     /// // assert_eq!(foo.0, "Universe"); // Cannot compile. `foo` does not outlive reset.
     /// ```
-    #[inline]
+    #[inline(always)]
     pub fn emplace_no_drop<T>(&self) -> Emplace<A, T> {
         Emplace {
             blink: self,
@@ -1085,7 +1091,7 @@ where
     /// blink.reset();
     /// // assert_eq!(foo.0, "Universe"); // Cannot compile. `foo` does not outlive reset.
     /// ```
-    #[inline]
+    #[inline(always)]
     pub fn emplace_shared<T>(&self) -> Emplace<A, T, &T, &[T]> {
         Emplace {
             blink: self,
@@ -1140,7 +1146,7 @@ where
     /// blink.reset();
     /// // assert_eq!(foo.0, "Universe"); // Cannot compile. `foo` does not outlive reset.
     /// ```
-    #[inline]
+    #[inline(always)]
     pub unsafe fn emplace_unchecked<T>(&self) -> Emplace<A, T> {
         Emplace {
             blink: self,
@@ -1182,22 +1188,25 @@ where
 {
     /// Creates new [`SendBlink`] from [`Blink`].
     /// Resets the blink allocator to avoid dropping non-sendable types on other threads.
+    #[inline(always)]
     pub fn new(mut blink: Blink<A>) -> Self {
         blink.reset();
         SendBlink { blink }
     }
 
     /// Returns inner [`Blink`] value.
+    #[inline(always)]
     pub fn into_inner(self) -> Blink<A> {
         self.blink
     }
 }
 
-#[inline]
+#[inline(always)]
 fn never<T>(never: Infallible) -> T {
     match never {}
 }
 
+#[inline]
 fn size_hint_and_one(lower: usize, upper: Option<usize>, count: usize) -> Option<usize> {
     const FASTER_START: usize = 8;
 
@@ -1215,6 +1224,7 @@ fn size_hint_and_one(lower: usize, upper: Option<usize>, count: usize) -> Option
     count.checked_add(size_hint)
 }
 
+#[inline]
 fn saturating_drain_iter<T>(mut iter: impl Iterator<Item = T>) -> usize {
     let mut drained = 0;
     loop {
