@@ -1,8 +1,77 @@
 #![cfg_attr(feature = "nightly", feature(allocator_api))]
 
-use allocator_api2::{Allocator, Layout};
+use std::{
+    alloc::System,
+    sync::atomic::{AtomicUsize, Ordering},
+};
+
+use allocator_api2::{Allocator, GlobalAlloc, Layout};
 use blink_alloc::*;
 use criterion::*;
+
+/// GlobalAlloc that counts the number of allocations and deallocations
+/// and number of bytes allocated and deallocated.
+struct CountingGlobalAlloc {
+    allocations: AtomicUsize,
+    deallocations: AtomicUsize,
+
+    bytes_allocated: AtomicUsize,
+    bytes_deallocated: AtomicUsize,
+}
+
+impl CountingGlobalAlloc {
+    pub const fn new() -> Self {
+        CountingGlobalAlloc {
+            allocations: AtomicUsize::new(0),
+            deallocations: AtomicUsize::new(0),
+            bytes_allocated: AtomicUsize::new(0),
+            bytes_deallocated: AtomicUsize::new(0),
+        }
+    }
+
+    pub fn reset_stat(&self) {
+        self.allocations.store(0, Ordering::Relaxed);
+        self.deallocations.store(0, Ordering::Relaxed);
+        self.bytes_allocated.store(0, Ordering::Relaxed);
+        self.bytes_deallocated.store(0, Ordering::Relaxed);
+    }
+
+    pub fn print_stat(&self) {
+        let allocations = self.allocations.load(Ordering::Relaxed);
+        let deallocations = self.deallocations.load(Ordering::Relaxed);
+        let bytes_allocated = self.bytes_allocated.load(Ordering::Relaxed);
+        let bytes_deallocated = self.bytes_deallocated.load(Ordering::Relaxed);
+
+        eprintln!(
+            "allocations: {allocations},
+            deallocations: {deallocations},
+            bytes_allocated: {bytes_allocated},
+            bytes_deallocated: {bytes_deallocated}"
+        )
+    }
+}
+
+unsafe impl GlobalAlloc for CountingGlobalAlloc {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let ptr = System.alloc(layout);
+        if !ptr.is_null() {
+            self.allocations.fetch_add(1, Ordering::Relaxed);
+            self.bytes_allocated
+                .fetch_add(layout.size(), Ordering::Relaxed);
+        }
+        ptr
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        System.dealloc(ptr, layout);
+        self.deallocations.fetch_add(1, Ordering::Relaxed);
+        self.bytes_deallocated
+            .fetch_add(layout.size(), Ordering::Relaxed);
+    }
+}
+
+#[global_allocator]
+static COUNTING_ALLOCATOR: CountingGlobalAlloc = CountingGlobalAlloc::new();
 
 trait BumpAllocator
 where
@@ -160,8 +229,10 @@ where
     for<'a> &'a A: Allocator,
     A: BumpAllocator + Default,
 {
-    let mut alloc = A::default();
     let mut group = c.benchmark_group(format!("allocation/{name}"));
+
+    COUNTING_ALLOCATOR.reset_stat();
+    let mut alloc = A::default();
 
     for size in SIZES {
         group.bench_function(format!("alloc 4 bytes x {size}"), |b| {
@@ -173,6 +244,10 @@ where
             })
         });
     }
+
+    COUNTING_ALLOCATOR.print_stat();
+    COUNTING_ALLOCATOR.reset_stat();
+    alloc = A::default();
 
     for size in SIZES {
         group.bench_function(format!("alloc 4 bytes, resize to 8 bytes x {size}"), |b| {
@@ -190,6 +265,8 @@ where
         });
     }
 
+    COUNTING_ALLOCATOR.print_stat();
+
     group.finish();
 }
 
@@ -198,8 +275,10 @@ where
     for<'a> &'a A: Allocator,
     A: BumpAllocator + Default,
 {
-    let mut alloc = A::default();
     let mut group = c.benchmark_group(format!("warm-up/{name}"));
+
+    COUNTING_ALLOCATOR.reset_stat();
+    let mut alloc = A::default();
 
     for size in SIZES {
         group.bench_function(format!("alloc 4 bytes x {size}"), |b| {
@@ -212,6 +291,8 @@ where
         alloc.reset();
     }
 
+    COUNTING_ALLOCATOR.print_stat();
+
     group.finish();
 }
 
@@ -219,8 +300,10 @@ fn bench_from_iter<A>(name: &str, c: &mut Criterion)
 where
     A: Adaptor + Default,
 {
-    let mut adaptor = A::default();
     let mut group = c.benchmark_group(format!("from-iter/{name}"));
+
+    COUNTING_ALLOCATOR.reset_stat();
+    let mut adaptor = A::default();
 
     if A::CAN_DROP && A::ANY_ITER {
         for size in SIZES {
@@ -233,6 +316,10 @@ where
                 })
             });
         }
+
+        COUNTING_ALLOCATOR.print_stat();
+        COUNTING_ALLOCATOR.reset_stat();
+        adaptor = A::default();
     }
 
     for size in SIZES {
@@ -247,6 +334,10 @@ where
             })
         });
     }
+
+    COUNTING_ALLOCATOR.print_stat();
+    COUNTING_ALLOCATOR.reset_stat();
+    adaptor = A::default();
 
     if A::CAN_DROP && A::ANY_ITER {
         for size in SIZES {
@@ -265,6 +356,10 @@ where
                 })
             });
         }
+
+        COUNTING_ALLOCATOR.print_stat();
+        COUNTING_ALLOCATOR.reset_stat();
+        adaptor = A::default();
     }
 
     if A::ANY_ITER {
@@ -284,6 +379,8 @@ where
                 })
             });
         }
+
+        COUNTING_ALLOCATOR.print_stat();
     }
 
     group.finish();

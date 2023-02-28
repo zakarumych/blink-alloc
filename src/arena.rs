@@ -185,11 +185,14 @@ impl<T: Copy> Mut<T> for &Cell<T> {
     }
 }
 
-/// 0.5 KB. Initial chunk size.
+/// 0.25 KB. Initial chunk size.
 const CHUNK_START_SIZE: usize = 256;
 
-/// 64 KB. After this size, new chunk size is not aligned to next power of two.
-const CHUNK_POWER_OF_TWO_THRESHOLD: usize = 1 << 12;
+/// 16 KB. After this size, new chunk size is not aligned to next power of two.
+const CHUNK_POWER_OF_TWO_THRESHOLD: usize = 1 << 14;
+
+/// 4 KB. After power-of-two threshold, new chunk size is aligned to this value.
+const CHUNK_PAGE_SIZE_THRESHOLD: usize = 1 << 12;
 
 /// 1/8 KB. Minimum chunk size growth step.
 const CHUNK_MIN_GROW_STEP: usize = 64;
@@ -199,6 +202,7 @@ pub struct ChunkHeader<T> {
     cursor: T,
     end: *mut u8,
     prev: Option<NonNull<Self>>,
+    cumulative_size: usize,
 }
 
 impl<T> ChunkHeader<T>
@@ -262,12 +266,21 @@ where
         let header_ptr = header_ptr.cast::<Self>();
         let base = header_ptr.add(1).cast::<u8>();
 
+        let cumulative_size = match prev {
+            None => 0,
+            Some(prev) => {
+                let prev = unsafe { prev.as_ref() };
+                prev.cap() + prev.cumulative_size
+            }
+        };
+
         ptr::write(
             header_ptr,
             ChunkHeader {
                 cursor: T::new(base),
                 end,
                 prev,
+                cumulative_size,
             },
         );
         NonNull::new_unchecked(header_ptr)
@@ -328,8 +341,13 @@ where
             // `cursor` is always within `base..=self` range.
             let used = unsafe { self.offset_from_base(cursor) };
 
+            // Add historic size.
+            let Some(total_used) = used.checked_add(self.cumulative_size) else {
+                return Err(None);
+            };
+
             // Find size that will fit previous allocation and the new one.
-            let Some(next_size) = layout_sum.checked_add(used)  else {
+            let Some(next_size) = layout_sum.checked_add(total_used) else {
                 return Err(None);
             };
 
@@ -357,8 +375,17 @@ where
 
         let end_addr = sptr::Strict::addr(self.end);
         if next_addr > end_addr {
+            let Some(overused) = (next_addr - end_addr).checked_add(self.cap()) else {
+                return Err(None);
+            };
+
+            // Add historic size.
+            let Some(required) = overused.checked_add(self.cumulative_size) else {
+                return Err(None);
+            };
+
             // Not enough space.
-            return Err((next_addr - end_addr).checked_add(self.cap()));
+            return Err(Some(required));
         }
 
         let aligned = unsafe { cursor.add(aligned_addr - cursor_addr) };
@@ -563,6 +590,7 @@ where
         let me = chunk.as_mut();
         let base = me.base_mut();
         me.cursor.set(base);
+        me.cumulative_size = 0;
         me.prev.take()
     }
 
@@ -616,7 +644,7 @@ where
 #[cold]
 unsafe fn alloc_slow<T, A, const ZEROED: bool>(
     mut root: impl Mut<Option<NonNull<ChunkHeader<T>>>>,
-    mut chunk_size: usize,
+    chunk_size: usize,
     layout: Layout,
     allocator: &A,
 ) -> Result<NonNull<[u8]>, AllocError>
@@ -624,11 +652,15 @@ where
     T: CasPtr,
     A: Allocator,
 {
-    chunk_size += size_of::<ChunkHeader<T>>();
+    let Some(mut chunk_size) = chunk_size.checked_add(size_of::<ChunkHeader<T>>()) else {
+        return Err(AllocError);
+    };
 
     // Grow size exponentially until a threshold.
     if chunk_size < CHUNK_POWER_OF_TWO_THRESHOLD {
         chunk_size = chunk_size.next_power_of_two();
+    } else {
+        chunk_size = align_up(chunk_size, CHUNK_PAGE_SIZE_THRESHOLD).unwrap_or(chunk_size);
     }
 
     let min_chunk_size = CHUNK_START_SIZE.max(size_of::<[ChunkHeader<T>; 16]>());
@@ -722,13 +754,13 @@ pub unsafe fn reset<T, A>(
     A: Allocator,
 {
     let mut prev = if keep_last {
-        let Some(chunk) = root else {
+        let Some(root) = root else {
             return;
         };
 
         // Safety: `chunk` is a valid pointer to chunk allocation.
         // This function owns mutable reference to `self`.
-        unsafe { ChunkHeader::reset(*chunk) }
+        unsafe { ChunkHeader::reset(*root) }
     } else {
         root.take()
     };
