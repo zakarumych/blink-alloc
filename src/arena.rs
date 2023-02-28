@@ -379,7 +379,11 @@ where
 
     // Safety: `chunk` must be a pointer to the valid chunk allocation.
     #[inline]
-    unsafe fn alloc(chunk: NonNull<Self>, layout: Layout) -> Result<NonNull<[u8]>, Option<usize>> {
+    unsafe fn alloc(
+        chunk: NonNull<Self>,
+        layout: Layout,
+        zeroed: bool,
+    ) -> Result<NonNull<[u8]>, Option<usize>> {
         // Safety: `chunk` is a valid pointer to chunk allocation.
         let me = unsafe { chunk.as_ref() };
         let mut cursor = me.cursor.load(Ordering::Relaxed);
@@ -395,7 +399,12 @@ where
             });
 
             match result {
-                Ok(Ok(slice)) => return Ok(slice),
+                Ok(Ok(slice)) => {
+                    if zeroed {
+                        unsafe { ptr::write_bytes(slice.as_ptr().cast::<u8>(), 0, slice.len()) }
+                    }
+                    return Ok(slice);
+                }
                 Ok(Err(updated)) => cursor = updated,
                 Err(next_size) => return Err(next_size),
             }
@@ -420,6 +429,7 @@ where
         ptr: NonNull<u8>,
         old_size: usize,
         new_layout: Layout,
+        zeroed: bool,
     ) -> Result<NonNull<[u8]>, Option<usize>> {
         // Safety: `chunk` is a valid pointer to chunk allocation.
         let me = unsafe { chunk.as_ref() };
@@ -508,17 +518,37 @@ where
                 // Use smaller size of the old and new allocation.
                 memmove(ptr.as_ptr(), aligned, new_layout.size().min(old_size));
 
+                if zeroed && old_size < new_layout.size() {
+                    core::ptr::write_bytes(
+                        ptr.as_ptr().add(old_size),
+                        0,
+                        new_layout.size() - old_size,
+                    );
+                }
+
                 let slice = core::ptr::slice_from_raw_parts_mut(aligned, new_layout.size());
                 return Ok(NonNull::new_unchecked(slice));
             }
         }
 
         // Have to reallocate.
-        let new_ptr = ChunkHeader::alloc(chunk, new_layout)?;
+        let new_ptr = ChunkHeader::alloc(chunk, new_layout, false)?;
 
         // Copy bytes from old location to new.
         // Separate allocations cannot overlap.
-        core::ptr::copy_nonoverlapping(ptr.as_ptr(), new_ptr.as_ptr().cast(), new_layout.size());
+        core::ptr::copy_nonoverlapping(
+            ptr.as_ptr(),
+            new_ptr.as_ptr().cast(),
+            new_layout.size().min(old_size),
+        );
+
+        if zeroed && old_size < new_layout.size() {
+            core::ptr::write_bytes(
+                new_ptr.as_ptr().cast::<u8>(),
+                0,
+                new_layout.size() - old_size,
+            );
+        }
 
         // Deallocation is not possible.
 
@@ -561,6 +591,7 @@ where
 unsafe fn alloc_fast<T>(
     root: Option<NonNull<ChunkHeader<T>>>,
     layout: Layout,
+    zeroed: bool,
 ) -> Result<NonNull<[u8]>, Option<usize>>
 where
     T: CasPtr,
@@ -568,7 +599,7 @@ where
     match root {
         Some(root) => {
             // Safety: `chunk` is a valid pointer to chunk allocation.
-            unsafe { ChunkHeader::alloc(root, layout) }
+            unsafe { ChunkHeader::alloc(root, layout, zeroed) }
         }
         None => {
             let Some(min_chunk_size) = layout_sum(&layout).checked_add(size_of::<ChunkHeader<T>>()) else {
@@ -585,6 +616,7 @@ unsafe fn alloc_slow<T, A>(
     mut root: impl Mut<Option<NonNull<ChunkHeader<T>>>>,
     mut chunk_size: usize,
     layout: Layout,
+    zeroed: bool,
     allocator: &A,
 ) -> Result<NonNull<[u8]>, AllocError>
 where
@@ -604,7 +636,7 @@ where
     let new_chunk = ChunkHeader::alloc_chunk(chunk_size, allocator, root.get())?;
 
     // Safety: `chunk` is a valid pointer to chunk allocation.
-    let res = unsafe { ChunkHeader::alloc(new_chunk, layout) };
+    let res = unsafe { ChunkHeader::alloc(new_chunk, layout, zeroed) };
     let Ok(ptr) = res else {
         // Safety: chunk size must fit requested allocation.
         unsafe { unreachable_unchecked() }
@@ -620,6 +652,7 @@ unsafe fn resize_fast<T>(
     ptr: NonNull<u8>,
     old_size: usize,
     new_layout: Layout,
+    zeroed: bool,
 ) -> Result<NonNull<[u8]>, Option<usize>>
 where
     T: CasPtr,
@@ -627,7 +660,7 @@ where
     match root {
         Some(root) => {
             // Safety: `chunk` is a valid pointer to chunk allocation.
-            unsafe { ChunkHeader::resize(root, ptr, old_size, new_layout) }
+            unsafe { ChunkHeader::resize(root, ptr, old_size, new_layout, zeroed) }
         }
         None => {
             // Allocated memory block exists, so chunks must exist too.
@@ -643,18 +676,22 @@ unsafe fn resize_slow<T, A>(
     ptr: NonNull<u8>,
     old_size: usize,
     new_layout: Layout,
+    zeroed: bool,
     allocator: &A,
 ) -> Result<NonNull<[u8]>, AllocError>
 where
     T: CasPtr,
     A: Allocator,
 {
-    let new_ptr = alloc_slow(root, chunk_size, new_layout, allocator)?;
+    let new_ptr = alloc_slow(root, chunk_size, new_layout, false, allocator)?;
     core::ptr::copy_nonoverlapping(
         ptr.as_ptr(),
         new_ptr.as_ptr().cast(),
         new_layout.size().min(old_size),
     );
+    if zeroed && old_size < new_layout.size() {
+        core::ptr::write_bytes(ptr.as_ptr().add(old_size), 0, new_layout.size() - old_size);
+    }
     // Deallocation is impossible.
     Ok(new_ptr)
 }
@@ -730,6 +767,7 @@ pub trait Arena {
     unsafe fn alloc(
         &self,
         layout: Layout,
+        zeroed: bool,
         allocator: &impl Allocator,
     ) -> Result<NonNull<[u8]>, AllocError>;
 
@@ -740,6 +778,7 @@ pub trait Arena {
         ptr: NonNull<u8>,
         old_size: usize,
         new_layout: Layout,
+        zeroed: bool,
         allocator: &impl Allocator,
     ) -> Result<NonNull<[u8]>, AllocError>;
 
@@ -806,15 +845,17 @@ impl Arena for ArenaLocal {
     unsafe fn alloc(
         &self,
         layout: Layout,
+        zeroed: bool,
         allocator: &impl Allocator,
     ) -> Result<NonNull<[u8]>, AllocError> {
-        match alloc_fast(self.root.get(), layout) {
+        match alloc_fast(self.root.get(), layout, zeroed) {
             Ok(ptr) => Ok(ptr),
             Err(None) => Err(AllocError),
             Err(Some(chunk_size)) => alloc_slow(
                 &self.root,
                 chunk_size.max(self.min_chunk_size.get()),
                 layout,
+                zeroed,
                 allocator,
             ),
         }
@@ -826,9 +867,10 @@ impl Arena for ArenaLocal {
         ptr: NonNull<u8>,
         old_size: usize,
         new_layout: Layout,
+        zeroed: bool,
         allocator: &impl Allocator,
     ) -> Result<NonNull<[u8]>, AllocError> {
-        match resize_fast(self.root.get(), ptr, old_size, new_layout) {
+        match resize_fast(self.root.get(), ptr, old_size, new_layout, zeroed) {
             Ok(ptr) => Ok(ptr),
             Err(None) => Err(AllocError),
             Err(Some(chunk_size)) => resize_slow(
@@ -837,6 +879,7 @@ impl Arena for ArenaLocal {
                 ptr,
                 old_size,
                 new_layout,
+                zeroed,
                 allocator,
             ),
         }
@@ -902,11 +945,12 @@ mod sync {
         unsafe fn alloc(
             &self,
             layout: Layout,
+            zeroed: bool,
             allocator: &impl Allocator,
         ) -> Result<NonNull<[u8]>, AllocError> {
             let inner = self.inner.read();
 
-            match alloc_fast(inner.root, layout) {
+            match alloc_fast(inner.root, layout, zeroed) {
                 Ok(ptr) => Ok(ptr),
                 Err(None) => Err(AllocError),
                 Err(Some(chunk_size)) => {
@@ -918,6 +962,7 @@ mod sync {
                         &mut inner.root,
                         chunk_size.max(inner.min_chunk_size),
                         layout,
+                        zeroed,
                         allocator,
                     )
                 }
@@ -930,10 +975,11 @@ mod sync {
             ptr: NonNull<u8>,
             old_size: usize,
             new_layout: Layout,
+            zeroed: bool,
             allocator: &impl Allocator,
         ) -> Result<NonNull<[u8]>, AllocError> {
             let inner = self.inner.read();
-            match resize_fast(inner.root, ptr, old_size, new_layout) {
+            match resize_fast(inner.root, ptr, old_size, new_layout, zeroed) {
                 Ok(ptr) => Ok(ptr),
                 Err(None) => Err(AllocError),
                 Err(Some(chunk_size)) => {
@@ -947,6 +993,7 @@ mod sync {
                         ptr,
                         old_size,
                         new_layout,
+                        zeroed,
                         allocator,
                     )
                 }

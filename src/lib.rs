@@ -45,7 +45,7 @@ mod oom;
 
 pub use self::{
     api::BlinkAllocator,
-    blink::{Blink, Emplace, SendBlink},
+    blink::{Blink, Emplace, IteratorExt, SendBlink},
     local::BlinkAlloc,
 };
 

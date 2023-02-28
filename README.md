@@ -13,6 +13,8 @@ reset everything at once by setting cursor back to start.
 With Rust's borrow checker this idea can be implemented safely,
 preventing resets to occur while allocated memory is in use.
 
+### [Jump to examples](#examples)
+
 # Design
 
 The blink-allocator acts as an adaptor to some lower-level allocator.
@@ -85,6 +87,15 @@ Tasks may fetch blink allocator from cache,
 use it and then return it back to cache.
 Cache keeps [`BlinkAlloc`] instances warmed up.
 
+# Allocator API
+
+Allocators implement [`Allocator`] interface from [`alloc`] crate
+or a copy of it when feature `"nightly"` is not enabled.
+`"nightly"` requires Rust feature [`allocator_api`]
+and works only on nightly.
+Once [`Allocator`] trait is stable the feature will do nothing and
+removed in next major release.
+
 # Blink without collections
 
 [`BlinkAlloc`] and friends implement [`Allocator`] from [`allocator_api`]
@@ -100,30 +111,45 @@ Also [`hashbrown::HashMap`] and [`hashbrown::HashSet`] support it with
 
 However on stable it cannot be used right now.
 
-# Allocator API
+It is still possible to use blink-allocators in safe manner -
+meet [`Blink`] allocator adaptor.
+Put anything into memory allocated by [`Blink`].
+Values, iterators, closures to construct a value,
+slices and strings.
+It works with everything*.
+Uses underlying blink-allocator and returns mutable reference
+to values placed into allocated memory.
+By default it drops placed values on reset.
 
-Allocators implement [`Allocator`] interface from [`alloc`] crate
-or a copy of it when feature `"nightly"` is not enabled.
-`"nightly"` requires Rust feature [`allocator_api`]
-and works only on nightly.
-Once [`Allocator`] trait is stable the feature will do nothing and
-removed in next major release.
+\* Ask for API extension if doesn't work for your use case.
 
 # Examples
+
+Usage of [`Blink`] allocator adaptor.
+Initialize and start putting values there.
 
 ```rust
 use blink_alloc::Blink;
 
 fn main() {
+    // `Blink::new` uses `BlinkAlloc<Global>`
     let mut blink = Blink::new();
 
+    // Allocates memory and moves value there.
+    // Returns mutable reference to it.
     let x = blink.put(42);
     assert_eq!(*x, 42);
+    *x = 11;
 
+    // Copies string slice to the blink-allocated memory.
     let string = blink.copy_str("Hello world");
+
+    // Mutable reference allows string mutation
     string.make_ascii_lowercase();
     assert_eq!(string, "hello world");
 
+    // Consumes iterator and returns all values from it in slice.
+    // Works fine on problematic iterators with terrible size hint.
     let slice = blink.emplace().from_iter((0..10).filter(|x| x % 3 != 0));
     assert_eq!(&*slice, &[1, 2, 4, 5, 7, 8]);
     blink.reset();
@@ -174,6 +200,7 @@ Unless you explicitly state otherwise, any contribution intentionally submitted 
 [`SyncBlinkAlloc`]: https://docs.rs/blink-alloc/latest/blink_alloc/struct.SyncBlinkAlloc.html
 [`LocalBlinkAlloc`]: https://docs.rs/blink-alloc/latest/blink_alloc/struct.LocalBlinkAlloc.html
 [`BlinkAllocCache`]: https://docs.rs/blink-alloc/latest/blink_alloc/struct.BlinkAllocCache.html
+[`Blink`]: https://docs.rs/blink-alloc/latest/blink_alloc/struct.Blink.html
 [`Allocator`]: https://docs.rs/allocator-api2/latest/allocator_api2/
 [`allocator_api`]: https://doc.rust-lang.org/beta/unstable-book/library-features/allocator-api.html
 [`core::alloc::Allocator`]: https://doc.rust-lang.org/core/alloc/trait.Allocator.html

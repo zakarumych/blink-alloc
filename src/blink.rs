@@ -47,6 +47,68 @@ impl<'a, T: ?Sized> CoerceFromMut<'a, T> for &'a T {
     }
 }
 
+/// Iterator extension trait for collecting iterators into blink allocator.
+///
+/// # Examples
+///
+/// ```
+/// # use blink_alloc::{Blink, IteratorExt};
+/// let mut blink = Blink::new();
+/// let slice = (0..10).filter(|x| x % 3 != 0).collect_to_blink(&mut blink);
+/// assert_eq!(slice, [1, 2, 4, 5, 7, 8]);
+/// slice[0] = 10;
+/// assert_eq!(slice, [10, 2, 4, 5, 7, 8]);
+/// ```
+///
+/// For non-static data with drop.
+///
+/// ```
+/// # use blink_alloc::{Blink, IteratorExt};
+/// let mut blink = Blink::new();
+/// let slice = (0..10).filter(|x| x % 3 != 0).collect_to_blink_shared(&mut blink);
+/// assert_eq!(slice, [1, 2, 4, 5, 7, 8]);
+/// ```
+///
+/// For non-static data and no drop.
+///
+/// ```
+/// # use blink_alloc::{Blink, IteratorExt};
+/// let mut blink = Blink::new();
+/// let slice = (0..10).filter(|x| x % 3 != 0).collect_to_blink_no_drop(&mut blink);
+/// assert_eq!(slice, [1, 2, 4, 5, 7, 8]);
+/// slice[0] = 10;
+/// assert_eq!(slice, [10, 2, 4, 5, 7, 8]);
+/// ```
+pub trait IteratorExt: Iterator {
+    /// Collect iterator into blink allocator and return slice reference.
+    #[inline]
+    fn collect_to_blink(self, blink: &mut Blink) -> &mut [Self::Item]
+    where
+        Self: Sized,
+        Self::Item: 'static,
+    {
+        blink.emplace().from_iter(self)
+    }
+
+    #[inline]
+    fn collect_to_blink_shared(self, blink: &mut Blink) -> &[Self::Item]
+    where
+        Self: Sized,
+    {
+        blink.emplace_shared().from_iter(self)
+    }
+
+    #[inline]
+    fn collect_to_blink_no_drop(self, blink: &mut Blink) -> &mut [Self::Item]
+    where
+        Self: Sized,
+    {
+        blink.emplace_no_drop().from_iter(self)
+    }
+}
+
+impl<I> IteratorExt for I where I: Iterator {}
+
 with_global_default! {
     /// An allocator adaptor for designed for blink allocator.
     /// Provides user-friendly methods to emplace values into allocated memory.
@@ -280,30 +342,78 @@ where
     where
         I: Iterator<Item = T>,
     {
-        struct Guard<'a, T: 'a> {
+        if size_of::<T>() == 0 {
+            let item_layout = Layout::new::<DropItem<[T; 0]>>();
+            let Ok(ptr) = self.alloc.allocate(item_layout) else {
+                return match iter.next() {
+                    None => Ok(&mut []),
+                    Some(elem) => Err(err(&mut [], elem, Some(item_layout))),
+                }
+            };
+            // Drain elements from iterator.
+            // Stop at `usize::MAX`.
+            // Drop exactly this number of elements on reset.
+            let count = saturating_drain_iter(iter);
+            let (item, slice) = DropItem::init_slice(ptr.cast(), count);
+            self.drop_list.add(item);
+            return Ok(slice);
+        }
+
+        struct Guard<'a, T: 'a, A: BlinkAllocator> {
             ptr: Option<NonNull<DropItem<[T; 0]>>>,
             count: usize,
+            cap: usize,
+            layout: Layout,
+            alloc: &'a A,
             drop_list: &'a DropList,
         }
 
-        impl<'a, T> Drop for Guard<'a, T> {
+        impl<'a, T, A> Drop for Guard<'a, T, A>
+        where
+            A: BlinkAllocator,
+        {
             #[inline]
             fn drop(&mut self) {
-                self._flush();
+                // Safety: Called once.
+                unsafe {
+                    self._flush();
+                }
             }
         }
 
-        impl<'a, T> Guard<'a, T> {
+        impl<'a, T, A> Guard<'a, T, A>
+        where
+            A: BlinkAllocator,
+        {
             #[inline]
             fn set(mut self) -> &'a mut [T] {
-                self._flush()
+                // Safety: Called once.
+                unsafe { self._flush() }
             }
 
+            /// # Safety
+            ///
+            /// Must be called once.
             #[inline]
-            fn _flush(&mut self) -> &'a mut [T] {
+            unsafe fn _flush(&mut self) -> &'a mut [T] {
                 if let Some(ptr) = self.ptr.take() {
+                    // shrink the allocation to the actual size.
+                    // `BlinkAllocator` guarantees that this will not fail
+                    // be a no-op.
+
+                    let item_layout = Layout::new::<DropItem<[T; 0]>>();
+
+                    let (new_layout, _) = Layout::array::<T>(self.count)
+                        .and_then(|array| item_layout.extend(array))
+                        .expect("Smaller than actual allocation");
+
+                    // Safety:
+                    // Shrinking the allocation to the actual used size.
+                    let ptr = unsafe { self.alloc.shrink(ptr.cast(), self.layout, new_layout) }
+                        .expect("BlinkAllocator guarantees this will succeed");
+
                     // Safety: `item` was properly initialized.
-                    let (item, slice) = unsafe { DropItem::init_slice(ptr, self.count) };
+                    let (item, slice) = unsafe { DropItem::init_slice(ptr.cast(), self.count) };
                     unsafe {
                         self.drop_list.add(item);
                     }
@@ -317,10 +427,12 @@ where
         let mut guard = Guard {
             ptr: None,
             count: 0,
+            cap: 0,
+            layout: Layout::new::<()>(),
+            alloc: &self.alloc,
             drop_list: &self.drop_list,
         };
 
-        let mut last_layout = Layout::new::<()>();
         let item_layout = Layout::new::<DropItem<[T; 0]>>();
 
         loop {
@@ -328,11 +440,8 @@ where
                 return Ok(guard.set());
             };
 
-            let (lower, _) = iter.size_hint();
-            let Some(lower) = lower.checked_add(1) else {
-                return Err(err(guard.set(), one_more_elem, None));
-            };
-            let Some(mut size_hint) = guard.count.checked_add(lower) else {
+            let (lower, upper) = iter.size_hint();
+            let Some(size_hint) = size_hint_and_one(lower, upper, guard.count) else {
                 return Err(err(guard.set(), one_more_elem, None));
             };
             let Ok(array_layout) = Layout::array::<T>(size_hint) else {
@@ -346,24 +455,24 @@ where
 
             let res = match guard.ptr {
                 None => self.alloc.allocate(full_layout),
-                Some(ptr) => self.alloc.grow(ptr.cast(), last_layout, full_layout),
+                Some(ptr) => self.alloc.grow(ptr.cast(), guard.layout, full_layout),
             };
 
             let Ok(ptr) = res else {
                 return Err(err(guard.set(), one_more_elem, Some(full_layout)));
             };
-            last_layout = full_layout;
+            guard.layout = full_layout;
 
             let item_ptr = ptr.cast();
             guard.ptr = Some(item_ptr);
 
             let len = ptr.len();
             if len > full_layout.size() {
-                let fits = (len - size_of::<DropItem<[T; 0]>>()) / size_of::<T>();
-                size_hint = fits;
+                guard.cap = (len - size_of::<DropItem<[T; 0]>>()) / size_of::<T>()
             } else {
                 debug_assert_eq!(len, full_layout.size());
-            }
+                guard.cap = size_hint;
+            };
 
             let array_ptr = unsafe { item_ptr.as_ptr().add(1).cast::<T>() };
 
@@ -375,7 +484,7 @@ where
 
             guard.count += 1;
 
-            for idx in guard.count..size_hint {
+            for idx in guard.count..guard.cap {
                 if Layout::new::<Option<T>>() == Layout::new::<T>() {
                     // Putting elements directly into the array.
                     if in_place(array_ptr.add(idx).cast(), &mut iter, Iterator::next).is_none() {
@@ -400,20 +509,39 @@ where
     where
         I: Iterator<Item = T>,
     {
-        struct Guard<T> {
+        struct Guard<'a, T: 'a, A: BlinkAllocator> {
             ptr: Option<NonNull<T>>,
             count: usize,
+            cap: usize,
+            layout: Layout,
+            alloc: &'a A,
         }
 
-        impl<T> Guard<T> {
+        impl<'a, T, A> Guard<'a, T, A>
+        where
+            A: BlinkAllocator,
+        {
             #[inline]
-            fn set<'a>(self) -> &'a mut [T] {
-                match self.ptr {
-                    Some(ptr) => {
-                        // Safety: `slice` was properly initialized.
-                        unsafe { core::slice::from_raw_parts_mut(ptr.as_ptr(), self.count) }
+            fn set(mut self) -> &'a mut [T] {
+                if let Some(ptr) = self.ptr.take() {
+                    // shrink the allocation to the actual size.
+                    // `BlinkAllocator` guarantees that this will not fail
+                    // be a no-op.
+
+                    let new_layout =
+                        Layout::array::<T>(self.count).expect("Smaller than actual allocation");
+
+                    // Safety:
+                    // Shrinking the allocation to the actual used size.
+                    let ptr = unsafe { self.alloc.shrink(ptr.cast(), self.layout, new_layout) }
+                        .expect("BlinkAllocator guarantees this will succeed");
+
+                    // Safety: reallocated for slice of size `self.count`
+                    unsafe {
+                        &mut *core::slice::from_raw_parts_mut(ptr.as_ptr().cast(), self.count)
                     }
-                    None => &mut [],
+                } else {
+                    &mut []
                 }
             }
         }
@@ -421,47 +549,45 @@ where
         let mut guard = Guard {
             ptr: None,
             count: 0,
+            cap: 0,
+            layout: Layout::new::<()>(),
+            alloc: &self.alloc,
         };
-        let mut last_layout = Layout::new::<()>();
 
         loop {
             let Some(one_more_elem) = iter.next() else {
                 return Ok(guard.set());
             };
 
-            let (lower, _) = iter.size_hint();
-            let Some(lower) = lower.checked_add(1) else {
+            let (lower, upper) = iter.size_hint();
+            let Some(size_hint) = size_hint_and_one(lower, upper, guard.count) else {
                 return Err(err(guard.set(), one_more_elem, None));
             };
-            let Some(mut size_hint) = guard.count.checked_add(lower) else {
-                return Err(err(guard.set(), one_more_elem, None));
-            };
-            let Ok(array_layout) = Layout::array::<T>(size_hint) else {
+            let Ok(full_layout) = Layout::array::<T>(size_hint) else {
                 return Err(err(guard.set(), one_more_elem, None));
             };
 
             let res = match guard.ptr {
-                None => self.alloc.allocate(array_layout),
-                Some(ptr) => self.alloc.grow(ptr.cast(), last_layout, array_layout),
+                None => self.alloc.allocate(full_layout),
+                Some(ptr) => self.alloc.grow(ptr.cast(), guard.layout, full_layout),
             };
 
             let Ok(ptr) = res else {
-                return Err(err(guard.set(), one_more_elem, Some(array_layout)));
+                return Err(err(guard.set(), one_more_elem, Some(full_layout)));
             };
-            last_layout = array_layout;
-
+            guard.layout = full_layout;
             guard.ptr = Some(ptr.cast());
 
             let len = ptr.len();
-            if len > array_layout.size() {
-                let fits = len / size_of::<T>();
-                debug_assert!(fits >= size_hint);
-                size_hint = fits;
+            if len > full_layout.size() {
+                guard.cap = len / size_of::<T>()
             } else {
-                debug_assert_eq!(len, array_layout.size());
-            }
+                debug_assert_eq!(len, full_layout.size());
+                guard.cap = size_hint;
+            };
 
             let array_ptr = ptr.as_ptr().cast::<T>();
+
             // Safety: `array_ptr` is a valid pointer to allocated memory for type `[T; hint]`.
             // And `hint` is larger than `guard.count`
             unsafe {
@@ -1070,4 +1196,58 @@ where
 #[inline]
 fn never<T>(never: Infallible) -> T {
     match never {}
+}
+
+fn size_hint_and_one(lower: usize, upper: Option<usize>, count: usize) -> Option<usize> {
+    const FASTER_START: usize = 8;
+
+    // Upper bound is limited by current size.
+    // Constant for faster start.
+    let upper = upper.map_or(count, |upper| upper.min(count.max(FASTER_START)));
+    let size_hint = lower.max(upper);
+
+    // Add one more element to size hint.
+    let Some(size_hint) = size_hint.checked_add(1) else {
+        return None;
+    };
+
+    // Sum with current count.
+    count.checked_add(size_hint)
+}
+
+fn saturating_drain_iter<T>(mut iter: impl Iterator<Item = T>) -> usize {
+    let mut drained = 0;
+    loop {
+        let (lower, _) = iter.size_hint();
+        if lower == 0 {
+            match iter.next() {
+                None => return drained,
+                Some(_) => drained += 1,
+            }
+            continue;
+        }
+        // Don't drink too much.
+        let lower = lower.min(usize::MAX - drained);
+        match iter.nth(lower - 1) {
+            None => {
+                // This bastard lied about lower bound.
+                // No idea how many elements were actually drained.
+                return drained;
+            }
+            Some(_) => {
+                drained += lower;
+            }
+        }
+        if drained == usize::MAX {
+            // Enough is enough.
+            return usize::MAX;
+        }
+    }
+}
+
+#[test]
+fn test_iter_drain() {
+    assert_eq!(5, saturating_drain_iter(0..5));
+    assert_eq!(usize::MAX, saturating_drain_iter(0..usize::MAX));
+    assert_eq!(usize::MAX, saturating_drain_iter(core::iter::repeat(1)));
 }

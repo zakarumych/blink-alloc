@@ -9,6 +9,11 @@ use allocator_api2::Allocator;
 /// The [`reset`][BlinkAllocator::reset]
 /// method deallocates all memory allocated from this instance at once.
 ///
+/// Additional guarantees are provided that
+///
+/// * [`Allocator::shrink`] will always succeed and never move memory
+/// when `ptr` is already aligned to `new_layout.align()`.
+///
 /// # Safety
 ///
 /// Draws most requirements from [`Allocator`] super-trait.
