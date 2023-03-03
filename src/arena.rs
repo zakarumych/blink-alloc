@@ -11,7 +11,7 @@ use core::{
     sync::atomic::{AtomicPtr, Ordering},
 };
 
-use allocator_api2::{AllocError, Allocator};
+use allocator_api2::alloc::{AllocError, Allocator};
 
 #[cfg(feature = "sync")]
 use parking_lot::RwLock;
@@ -156,7 +156,7 @@ impl CasPtr for AtomicPtr<u8> {
     }
 }
 
-trait Mut<T> {
+pub trait Mut<T> {
     fn get(&self) -> T;
     fn set(&mut self, value: T);
 }
@@ -254,16 +254,13 @@ where
     #[inline]
     unsafe fn init_chunk(slice: NonNull<[u8]>, prev: Option<NonNull<Self>>) -> NonNull<Self> {
         let len = slice.len();
-        let header_ptr = slice.as_ptr().cast::<u8>();
-        debug_assert!(is_aligned_to(
-            sptr::Strict::addr(header_ptr),
-            align_of::<Self>()
-        ));
+        let ptr = slice.as_ptr().cast::<u8>();
+        debug_assert!(is_aligned_to(sptr::Strict::addr(ptr), align_of::<Self>()));
         debug_assert!(len > size_of::<Self>());
 
-        let end = header_ptr.add(len);
+        let end = ptr.add(len);
 
-        let header_ptr = header_ptr.cast::<Self>();
+        let header_ptr = ptr.cast::<Self>();
         let base = header_ptr.add(1).cast::<u8>();
 
         let cumulative_size = match prev {
@@ -291,10 +288,10 @@ where
         unsafe { <*const Self>::add(self, 1).cast() }
     }
 
-    #[inline(always)]
-    fn base_mut(&mut self) -> *mut u8 {
-        unsafe { <*mut Self>::add(self, 1).cast() }
-    }
+    // #[inline(always)]
+    // fn base_mut(&mut self) -> *mut u8 {
+    //     unsafe { <*mut Self>::add(self, 1).cast() }
+    // }
 
     /// # Safety
     ///
@@ -403,7 +400,8 @@ where
         // offset is within unused allocated memory range starting from base.
         // base is not null.
         unsafe {
-            let slice = core::ptr::slice_from_raw_parts_mut(cursor, len);
+            debug_assert_eq!(aligned_addr % layout.align(), 0);
+            let slice = core::ptr::slice_from_raw_parts_mut(aligned, len);
             Ok(Ok(NonNull::new_unchecked(slice)))
         }
     }
@@ -493,7 +491,8 @@ where
             }
         }
 
-        if me.cursor.load(Ordering::Relaxed) == old_end {
+        let cursor = me.cursor.load(Ordering::Relaxed);
+        if cursor == old_end {
             // Possible to grow-shift.
 
             let Some(unaligned) = addr.checked_add(layout_sum(&new_layout)) else {
@@ -517,7 +516,7 @@ where
 
             debug_assert!(
                 aligned_addr >= addr,
-                "aligned_addr addr must not be less than cursor"
+                "aligned_addr must not be less than addr"
             );
             debug_assert!(
                 (aligned_addr - addr) < new_layout.align(),
@@ -532,7 +531,8 @@ where
                 return Err((next_addr - end_addr).checked_add(me.cap()));
             }
 
-            let aligned = unsafe { ptr.as_ptr().add(aligned_addr - addr) };
+            let cursor_addr = sptr::Strict::addr(cursor);
+            let aligned = unsafe { cursor.offset(aligned_addr as isize - cursor_addr as isize) };
             let next = unsafe { aligned.add(new_layout.size()) };
 
             let result = me.cursor.compare_exchange(
@@ -548,11 +548,7 @@ where
                 memmove(ptr.as_ptr(), aligned, new_layout.size().min(old_size));
 
                 if ZEROED && old_size < new_layout.size() {
-                    core::ptr::write_bytes(
-                        ptr.as_ptr().add(old_size),
-                        0,
-                        new_layout.size() - old_size,
-                    );
+                    core::ptr::write_bytes(aligned.add(old_size), 0, new_layout.size() - old_size);
                 }
 
                 let slice = core::ptr::slice_from_raw_parts_mut(aligned, new_layout.size());
@@ -588,7 +584,7 @@ where
     #[inline(always)]
     unsafe fn reset(mut chunk: NonNull<Self>) -> Option<NonNull<Self>> {
         let me = chunk.as_mut();
-        let base = me.base_mut();
+        let base = me.end.sub(me.cap());
         me.cursor.set(base);
         me.cumulative_size = 0;
         me.prev.take()
@@ -619,7 +615,7 @@ where
 }
 
 #[inline(always)]
-unsafe fn alloc_fast<T, const ZEROED: bool>(
+pub unsafe fn alloc_fast<T, const ZEROED: bool>(
     root: Option<NonNull<ChunkHeader<T>>>,
     layout: Layout,
 ) -> Result<NonNull<[u8]>, Option<usize>>
@@ -642,7 +638,7 @@ where
 }
 
 #[cold]
-unsafe fn alloc_slow<T, A, const ZEROED: bool>(
+pub unsafe fn alloc_slow<T, A, const ZEROED: bool>(
     mut root: impl Mut<Option<NonNull<ChunkHeader<T>>>>,
     chunk_size: usize,
     layout: Layout,
@@ -663,8 +659,8 @@ where
         chunk_size = align_up(chunk_size, CHUNK_PAGE_SIZE_THRESHOLD).unwrap_or(chunk_size);
     }
 
-    let min_chunk_size = CHUNK_START_SIZE.max(size_of::<[ChunkHeader<T>; 16]>());
-    chunk_size = chunk_size.max(min_chunk_size);
+    // let min_chunk_size = CHUNK_START_SIZE.max(size_of::<[ChunkHeader<T>; 16]>());
+    // chunk_size = chunk_size.max(min_chunk_size);
 
     let new_chunk = ChunkHeader::alloc_chunk(chunk_size, allocator, root.get())?;
 
@@ -680,7 +676,7 @@ where
 }
 
 #[inline(always)]
-unsafe fn resize_fast<T, const ZEROED: bool>(
+pub unsafe fn resize_fast<T, const ZEROED: bool>(
     root: Option<NonNull<ChunkHeader<T>>>,
     ptr: NonNull<u8>,
     old_size: usize,
@@ -701,8 +697,8 @@ where
     }
 }
 
-#[inline(always)]
-unsafe fn resize_slow<T, A, const ZEROED: bool>(
+#[cold]
+pub unsafe fn resize_slow<T, A, const ZEROED: bool>(
     root: impl Mut<Option<NonNull<ChunkHeader<T>>>>,
     chunk_size: usize,
     ptr: NonNull<u8>,
@@ -728,7 +724,7 @@ where
 }
 
 #[inline(always)]
-unsafe fn dealloc<T>(root: Option<NonNull<ChunkHeader<T>>>, ptr: NonNull<u8>, size: usize)
+pub unsafe fn dealloc<T>(root: Option<NonNull<ChunkHeader<T>>>, ptr: NonNull<u8>, size: usize)
 where
     T: CasPtr,
 {
@@ -849,7 +845,15 @@ impl Drop for ArenaLocal {
 
 impl ArenaLocal {
     #[inline(always)]
-    pub const fn new(min_chunk_size: usize) -> Self {
+    pub const fn new() -> Self {
+        ArenaLocal {
+            root: Cell::new(None),
+            min_chunk_size: Cell::new(CHUNK_START_SIZE),
+        }
+    }
+
+    #[inline(always)]
+    pub const fn with_chunk_size(min_chunk_size: usize) -> Self {
         ArenaLocal {
             root: Cell::new(None),
             min_chunk_size: Cell::new(min_chunk_size),
@@ -870,6 +874,7 @@ impl ArenaLocal {
 }
 
 impl Arena for ArenaLocal {
+    #[inline(always)]
     unsafe fn alloc<const ZEROED: bool>(
         &self,
         layout: Layout,
@@ -887,6 +892,7 @@ impl Arena for ArenaLocal {
         }
     }
 
+    #[inline(always)]
     unsafe fn resize<const ZEROED: bool>(
         &self,
         ptr: NonNull<u8>,
@@ -953,7 +959,17 @@ mod sync {
 
     impl ArenaSync {
         #[inline(always)]
-        pub const fn new(min_chunk_size: usize) -> Self {
+        pub const fn new() -> Self {
+            ArenaSync {
+                inner: RwLock::new(Inner {
+                    root: None,
+                    min_chunk_size: CHUNK_START_SIZE,
+                }),
+            }
+        }
+
+        #[inline(always)]
+        pub const fn with_chunk_size(min_chunk_size: usize) -> Self {
             ArenaSync {
                 inner: RwLock::new(Inner {
                     root: None,
@@ -964,6 +980,7 @@ mod sync {
     }
 
     impl Arena for ArenaSync {
+        #[inline(always)]
         unsafe fn alloc<const ZEROED: bool>(
             &self,
             layout: Layout,
@@ -989,6 +1006,7 @@ mod sync {
             }
         }
 
+        #[inline(always)]
         unsafe fn resize<const ZEROED: bool>(
             &self,
             ptr: NonNull<u8>,
@@ -1017,6 +1035,7 @@ mod sync {
             }
         }
 
+        #[inline(always)]
         unsafe fn dealloc(&self, ptr: NonNull<u8>, size: usize) {
             dealloc(self.inner.read().root, ptr, size)
         }

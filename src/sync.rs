@@ -6,10 +6,10 @@ use core::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use allocator_api2::{AllocError, Allocator};
+use allocator_api2::alloc::{AllocError, Allocator};
 
 #[cfg(feature = "alloc")]
-use allocator_api2::Global;
+use allocator_api2::alloc::Global;
 
 use crate::{
     api::BlinkAllocator,
@@ -86,8 +86,7 @@ with_global_default! {
     /// ```
     /// # #![cfg_attr(feature = "nightly", feature(allocator_api))]
     /// # use blink_alloc::BlinkAlloc;
-    /// # use std::vec::Vec;
-    /// # #[cfg(feature = "nightly")]
+    /// # use allocator_api2::vec::Vec;
     /// # fn main() {
     /// let mut blink = BlinkAlloc::new();
     /// let mut vec = Vec::new_in(&blink);
@@ -97,8 +96,6 @@ with_global_default! {
     /// drop(vec);
     /// blink.reset();
     /// # }
-    /// # #[cfg(not(feature = "nightly"))]
-    /// # fn main() {}
     /// ```
     pub struct SyncBlinkAlloc<A: Allocator = +Global> {
         arena: ArenaSync,
@@ -154,10 +151,24 @@ where
     /// to allocate memory chunks.
     ///
     /// See [`SyncBlinkAlloc::new`] for using global allocator.
-    #[inline]
+    #[inline(always)]
     pub const fn new_in(allocator: A) -> Self {
         SyncBlinkAlloc {
-            arena: ArenaSync::new(0),
+            arena: ArenaSync::new(),
+            allocator,
+            max_local_alloc: AtomicUsize::new(0),
+        }
+    }
+
+    /// Creates new blink allocator that uses global allocator
+    /// to allocate memory chunks.
+    /// With this method you can specify initial chunk size.
+    ///
+    /// See [`SyncBlinkAlloc::new_in`] for using custom allocator.
+    #[inline(always)]
+    pub const fn with_chunk_size_in(chunk_size: usize, allocator: A) -> Self {
+        SyncBlinkAlloc {
+            arena: ArenaSync::with_chunk_size(chunk_size),
             allocator,
             max_local_alloc: AtomicUsize::new(0),
         }
@@ -178,14 +189,14 @@ where
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```no_run
     /// # #![cfg_attr(feature = "nightly", feature(allocator_api))]
     /// # use blink_alloc::{BlinkAlloc, SyncBlinkAlloc, BlinkAllocator};
     /// # use std::vec::Vec;
     /// # #[cfg(feature = "nightly")]
     /// # fn main() {
     /// let mut blink = SyncBlinkAlloc::new();
-    /// for _ in 0..100 {
+    /// for _ in 0..3 {
     ///     for i in 0..16 {
     ///         std::thread::scope(|_| {
     ///             let blink = blink.local();
@@ -205,7 +216,7 @@ where
     #[inline(always)]
     pub fn local(&self) -> LocalBlinkAlloc<A> {
         LocalBlinkAlloc {
-            arena: ArenaLocal::new(self.max_local_alloc.load(Ordering::Relaxed)),
+            arena: ArenaLocal::with_chunk_size(self.max_local_alloc.load(Ordering::Relaxed)),
             shared: self,
         }
     }

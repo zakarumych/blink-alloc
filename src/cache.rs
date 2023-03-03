@@ -6,7 +6,7 @@ use core::{
 
 use alloc::vec::Vec;
 
-use allocator_api2::{Allocator, Global};
+use allocator_api2::alloc::{Allocator, Global};
 use parking_lot::RwLock;
 
 use crate::local::BlinkAlloc;

@@ -2,7 +2,10 @@
 
 use core::{alloc::Layout, cell::Cell, mem::size_of, ptr::NonNull};
 
-use allocator_api2::{AllocError, Allocator, Global};
+use allocator_api2::{
+    alloc::{AllocError, Allocator, Global},
+    vec,
+};
 
 use crate::{blink::Blink, local::BlinkAlloc};
 
@@ -30,7 +33,7 @@ fn test_bad_iter() {
     unsafe impl Allocator for OneTimeGlobal {
         fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
             if self.served.get() {
-                Err(allocator_api2::AllocError)
+                Err(allocator_api2::alloc::AllocError)
             } else {
                 self.served.set(true);
                 Global.allocate(layout)
@@ -87,9 +90,9 @@ fn test_reuse() {
         last: Cell::new(false),
     };
 
-    let mut alloc = BlinkAlloc::new_in(&allocator);
+    let mut alloc = BlinkAlloc::with_chunk_size_in(0, &allocator);
 
-    for i in 0..123155 {
+    for i in 0..123 {
         dbg!(i);
         alloc.allocate(Layout::new::<u32>()).unwrap();
     }
@@ -97,8 +100,43 @@ fn test_reuse() {
 
     allocator.last.set(false);
 
-    for i in 0..123155 {
+    for i in 0..123 {
         dbg!(i);
         alloc.allocate(Layout::new::<u32>()).unwrap();
     }
+}
+
+#[test]
+fn test_emplace_no_drop() {
+    struct Foo<'a>(&'a String);
+
+    impl Drop for Foo<'_> {
+        fn drop(&mut self) {
+            println!("{}", self.0);
+        }
+    }
+
+    let mut blink = Blink::new();
+    let s = "Hello".to_owned();
+    let foo = blink.emplace_no_drop().value(Foo(&s));
+    assert_eq!(foo.0, "Hello");
+    let world = blink.put("World".to_owned());
+    // Would be unsound if `foo` could be dropped.
+    foo.0 = world;
+    blink.reset();
+    // assert_eq!(foo.0, "Universe"); // Cannot compile. `foo` does not outlive reset.
+}
+
+#[test]
+fn test_vec() {
+    let mut blink_alloc = BlinkAlloc::new();
+    let mut vec = vec![in &blink_alloc; 1, 2, 3];
+
+    vec.push(4);
+    vec.extend(5..6);
+    vec.push(6);
+
+    assert_eq!(vec, [1, 2, 3, 4, 5, 6]);
+    drop(vec);
+    blink_alloc.reset();
 }

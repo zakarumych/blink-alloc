@@ -3,10 +3,10 @@
 
 use core::{alloc::Layout, ptr::NonNull};
 
-use allocator_api2::{AllocError, Allocator};
+use allocator_api2::alloc::{AllocError, Allocator};
 
 #[cfg(feature = "alloc")]
-use allocator_api2::Global;
+use allocator_api2::alloc::Global;
 
 use crate::{
     api::BlinkAllocator,
@@ -75,8 +75,7 @@ with_global_default! {
     /// ```
     /// # #![cfg_attr(feature = "nightly", feature(allocator_api))]
     /// # use blink_alloc::BlinkAlloc;
-    /// # use std::vec::Vec;
-    /// # #[cfg(feature = "nightly")]
+    /// # use allocator_api2::vec::Vec;
     /// # fn main() {
     /// let mut blink = BlinkAlloc::new();
     /// let mut vec = Vec::new_in(&blink);
@@ -86,8 +85,6 @@ with_global_default! {
     /// drop(vec);
     /// blink.reset();
     /// # }
-    /// # #[cfg(not(feature = "nightly"))]
-    /// # fn main() {}
     /// ```
     pub struct BlinkAlloc<A: Allocator = +Global> {
         arena: ArenaLocal,
@@ -150,7 +147,10 @@ where
     /// See [`BlinkAlloc::new`] for using global allocator.
     #[inline(always)]
     pub const fn new_in(allocator: A) -> Self {
-        BlinkAlloc::with_chunk_size_in(0, allocator)
+        BlinkAlloc {
+            arena: ArenaLocal::new(),
+            allocator,
+        }
     }
 
     /// Creates new blink allocator that uses global allocator
@@ -161,7 +161,7 @@ where
     #[inline(always)]
     pub const fn with_chunk_size_in(chunk_size: usize, allocator: A) -> Self {
         BlinkAlloc {
-            arena: ArenaLocal::new(chunk_size),
+            arena: ArenaLocal::with_chunk_size(chunk_size),
             allocator,
         }
     }

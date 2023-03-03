@@ -5,7 +5,7 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use allocator_api2::{Allocator, GlobalAlloc, Layout};
+use allocator_api2::alloc::{Allocator, GlobalAlloc, Layout};
 use blink_alloc::*;
 use criterion::*;
 
@@ -138,7 +138,10 @@ trait Adaptor {
     fn reset(&mut self);
 }
 
-impl Adaptor for Blink {
+impl<A> Adaptor for Blink<A>
+where
+    A: BlinkAllocator,
+{
     const CAN_DROP: bool = true;
     const ANY_ITER: bool = true;
 
@@ -224,7 +227,7 @@ impl Adaptor for bumpalo::Bump {
 
 const SIZES: [usize; 3] = [127, 1752, 45213];
 
-fn bench_allocation<A>(name: &str, c: &mut Criterion)
+fn bench_alloc<A>(name: &str, c: &mut Criterion)
 where
     for<'a> &'a A: Allocator,
     A: BumpAllocator + Default,
@@ -233,6 +236,10 @@ where
 
     COUNTING_ALLOCATOR.reset_stat();
     let mut alloc = A::default();
+
+    // Pre-warm the allocator
+    (&alloc).allocate(Layout::new::<[u32; 65536]>()).unwrap();
+    alloc.reset();
 
     for size in SIZES {
         group.bench_function(format!("alloc 4 bytes x {size}"), |b| {
@@ -247,7 +254,7 @@ where
 
     COUNTING_ALLOCATOR.print_stat();
     COUNTING_ALLOCATOR.reset_stat();
-    alloc = A::default();
+    // let mut alloc = A::default();
 
     for size in SIZES {
         group.bench_function(format!("alloc 4 bytes, resize to 8 bytes x {size}"), |b| {
@@ -278,21 +285,19 @@ where
     let mut group = c.benchmark_group(format!("warm-up/{name}"));
 
     COUNTING_ALLOCATOR.reset_stat();
-    let mut alloc = A::default();
 
     for size in SIZES {
         group.bench_function(format!("alloc 4 bytes x {size}"), |b| {
             b.iter(|| {
+                let alloc = A::default();
                 for _ in 0..size {
                     black_box((&alloc).allocate(Layout::new::<u32>()).unwrap());
                 }
             })
         });
-        alloc.reset();
     }
 
     COUNTING_ALLOCATOR.print_stat();
-
     group.finish();
 }
 
@@ -304,6 +309,10 @@ where
 
     COUNTING_ALLOCATOR.reset_stat();
     let mut adaptor = A::default();
+
+    // Pre-warm the allocator
+    adaptor.from_iter((0..65536).map(|_| 0u32));
+    adaptor.reset();
 
     if A::CAN_DROP && A::ANY_ITER {
         for size in SIZES {
@@ -319,7 +328,6 @@ where
 
         COUNTING_ALLOCATOR.print_stat();
         COUNTING_ALLOCATOR.reset_stat();
-        adaptor = A::default();
     }
 
     for size in SIZES {
@@ -337,7 +345,6 @@ where
 
     COUNTING_ALLOCATOR.print_stat();
     COUNTING_ALLOCATOR.reset_stat();
-    adaptor = A::default();
 
     if A::CAN_DROP && A::ANY_ITER {
         for size in SIZES {
@@ -359,7 +366,6 @@ where
 
         COUNTING_ALLOCATOR.print_stat();
         COUNTING_ALLOCATOR.reset_stat();
-        adaptor = A::default();
     }
 
     if A::ANY_ITER {
@@ -387,16 +393,16 @@ where
 }
 
 pub fn criterion_benchmark(c: &mut Criterion) {
-    bench_allocation::<BlinkAlloc>("blink_alloc::BlinkAlloc", c);
-    // bench_allocation::<SyncBlinkAlloc>("blink_alloc::SyncBlinkAlloc", c);
-    bench_allocation::<bumpalo::Bump>("bumpalo::Bump", c);
+    bench_alloc::<BlinkAlloc>("blink_alloc::BlinkAlloc", c);
+    bench_alloc::<SyncBlinkAlloc>("blink_alloc::SyncBlinkAlloc", c);
+    bench_alloc::<bumpalo::Bump>("bumpalo::Bump", c);
 
     bench_warm_up::<BlinkAlloc>("blink_alloc::BlinkAlloc", c);
-    // bench_warm_up::<SyncBlinkAlloc>("blink_alloc::SyncBlinkAlloc", c);
+    bench_warm_up::<SyncBlinkAlloc>("blink_alloc::SyncBlinkAlloc", c);
     bench_warm_up::<bumpalo::Bump>("bumpalo::Bump", c);
 
-    bench_from_iter::<Blink>("blink_alloc::BlinkAlloc", c);
-    // bench_from_iter::<SyncBlinkAlloc>("blink_alloc::SyncBlinkAlloc", c);
+    bench_from_iter::<Blink<BlinkAlloc>>("blink_alloc::BlinkAlloc", c);
+    bench_from_iter::<Blink<SyncBlinkAlloc>>("blink_alloc::SyncBlinkAlloc", c);
     bench_from_iter::<bumpalo::Bump>("bumpalo::Bump", c);
 }
 

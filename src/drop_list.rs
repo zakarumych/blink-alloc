@@ -22,11 +22,12 @@ struct Drops {
 }
 
 impl Drops {
-    unsafe fn drop(&self) -> Option<NonNull<Self>> {
+    unsafe fn drop(ptr: NonNull<Self>) -> Option<NonNull<Self>> {
+        let Drops { count, drop, next } = *ptr.as_ref();
         // Safety: `DropItem` constructed as part of `DropItemValue<T>`.
         // And `drop` is set to `drop_in_place::<T>`.
-        unsafe { (self.drop)(NonNull::from(self), self.count) };
-        self.next
+        unsafe { (drop)(ptr, count) };
+        next
     }
 }
 
@@ -98,10 +99,11 @@ impl DropList {
     /// # Safety
     ///
     /// `item` reference must be valid until next call to [`DropList::reset`].
-    pub unsafe fn add<'a, T: ?Sized>(&self, item: &'a mut DropItem<T>) -> &'a mut T {
+    pub unsafe fn add<'a, 'b: 'a, T: ?Sized>(&'a self, item: &'b mut DropItem<T>) -> &'a mut T {
         item.drops.next = self.root.take();
-        self.root.set(Some(NonNull::from(&mut item.drops)));
-        &mut item.value
+        let item = NonNull::from(item);
+        self.root.set(Some(item.cast()));
+        &mut *addr_of_mut!((*item.as_ptr()).value)
     }
 
     /// Drops all items in the list.
@@ -109,12 +111,10 @@ impl DropList {
         let mut next = self.root.take();
 
         while let Some(item_ptr) = next {
-            let item = unsafe { item_ptr.as_ref() };
-
             // Safety: `item` is a valid pointer to `DropItem`.
             // And it didn't move since it was added to the list.
             unsafe {
-                next = item.drop();
+                next = Drops::drop(item_ptr);
             }
         }
     }

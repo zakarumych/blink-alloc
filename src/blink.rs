@@ -9,7 +9,7 @@ use core::{
 };
 
 #[cfg(feature = "alloc")]
-use allocator_api2::Global;
+use allocator_api2::alloc::Global;
 
 use crate::{
     api::BlinkAllocator,
@@ -556,7 +556,7 @@ where
             ptr: None,
             count: 0,
             cap: 0,
-            layout: Layout::new::<()>(),
+            layout: Layout::new::<T>(),
             alloc: &self.alloc,
         };
 
@@ -581,6 +581,7 @@ where
             let Ok(ptr) = res else {
                 return Err(err(guard.set(), one_more_elem, Some(full_layout)));
             };
+
             guard.layout = full_layout;
             guard.ptr = Some(ptr.cast());
 
