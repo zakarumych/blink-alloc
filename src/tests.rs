@@ -4,7 +4,7 @@ use core::{alloc::Layout, cell::Cell, mem::size_of, ptr::NonNull};
 
 use allocator_api2::{
     alloc::{AllocError, Allocator, Global},
-    vec,
+    vec::Vec,
 };
 
 use crate::{blink::Blink, local::BlinkAlloc};
@@ -130,7 +130,8 @@ fn test_emplace_no_drop() {
 #[test]
 fn test_vec() {
     let mut blink_alloc = BlinkAlloc::new();
-    let mut vec = vec![in &blink_alloc; 1, 2, 3];
+    let mut vec = Vec::new_in(&blink_alloc);
+    vec.extend([1, 2, 3]);
 
     vec.push(4);
     vec.extend(5..6);

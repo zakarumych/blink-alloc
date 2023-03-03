@@ -255,14 +255,27 @@ where
     pub unsafe fn resize(
         &self,
         ptr: NonNull<u8>,
-        old_size: usize,
+        old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
         // Safety:
         // Same instance is used for all allocations and resets.
         unsafe {
-            self.arena
-                .resize::<false>(ptr, old_size, new_layout, &self.allocator)
+            if old_layout.align() >= new_layout.align() {
+                self.arena.resize::<false, true>(
+                    ptr,
+                    old_layout.size(),
+                    new_layout,
+                    &self.allocator,
+                )
+            } else {
+                self.arena.resize::<false, false>(
+                    ptr,
+                    old_layout.size(),
+                    new_layout,
+                    &self.allocator,
+                )
+            }
         }
     }
 
@@ -275,14 +288,23 @@ where
     pub unsafe fn resize_zeroed(
         &self,
         ptr: NonNull<u8>,
-        old_size: usize,
+        old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
         // Safety:
         // Same instance is used for all allocations and resets.
         unsafe {
-            self.arena
-                .resize::<true>(ptr, old_size, new_layout, &self.allocator)
+            if old_layout.align() >= new_layout.align() {
+                self.arena
+                    .resize::<true, true>(ptr, old_layout.size(), new_layout, &self.allocator)
+            } else {
+                self.arena.resize::<true, false>(
+                    ptr,
+                    old_layout.size(),
+                    new_layout,
+                    &self.allocator,
+                )
+            }
         }
     }
 
@@ -341,7 +363,7 @@ where
         old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
-        SyncBlinkAlloc::resize(&self, ptr, old_layout.size(), new_layout)
+        SyncBlinkAlloc::resize(&self, ptr, old_layout, new_layout)
     }
 
     #[inline(always)]
@@ -351,7 +373,7 @@ where
         old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
-        SyncBlinkAlloc::resize(self, ptr, old_layout.size(), new_layout)
+        SyncBlinkAlloc::resize(self, ptr, old_layout, new_layout)
     }
 
     #[inline(always)]
@@ -361,7 +383,7 @@ where
         old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
-        SyncBlinkAlloc::resize_zeroed(&self, ptr, old_layout.size(), new_layout)
+        SyncBlinkAlloc::resize_zeroed(&self, ptr, old_layout, new_layout)
     }
 
     #[inline(always)]
@@ -391,7 +413,7 @@ where
         old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
-        SyncBlinkAlloc::resize(&self, ptr, old_layout.size(), new_layout)
+        SyncBlinkAlloc::resize(&self, ptr, old_layout, new_layout)
     }
 
     #[inline(always)]
@@ -401,7 +423,7 @@ where
         old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
-        SyncBlinkAlloc::resize(self, ptr, old_layout.size(), new_layout)
+        SyncBlinkAlloc::resize(self, ptr, old_layout, new_layout)
     }
 
     #[inline(always)]
@@ -411,7 +433,7 @@ where
         old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
-        SyncBlinkAlloc::resize_zeroed(&self, ptr, old_layout.size(), new_layout)
+        SyncBlinkAlloc::resize_zeroed(&self, ptr, old_layout, new_layout)
     }
 
     #[inline(always)]
@@ -493,14 +515,19 @@ where
     pub unsafe fn resize(
         &self,
         ptr: NonNull<u8>,
-        old_size: usize,
+        old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
         // Safety:
         // Same instance is used for all allocations and resets.
         unsafe {
-            self.arena
-                .resize::<false>(ptr, old_size, new_layout, self.shared)
+            if old_layout.align() >= new_layout.align() {
+                self.arena
+                    .resize::<false, true>(ptr, old_layout.size(), new_layout, self.shared)
+            } else {
+                self.arena
+                    .resize::<false, false>(ptr, old_layout.size(), new_layout, self.shared)
+            }
         }
     }
 
@@ -513,14 +540,19 @@ where
     pub unsafe fn resize_zeroed(
         &self,
         ptr: NonNull<u8>,
-        old_size: usize,
+        old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
         // Safety:
         // Same instance is used for all allocations and resets.
         unsafe {
-            self.arena
-                .resize::<true>(ptr, old_size, new_layout, self.shared)
+            if old_layout.align() >= new_layout.align() {
+                self.arena
+                    .resize::<true, true>(ptr, old_layout.size(), new_layout, self.shared)
+            } else {
+                self.arena
+                    .resize::<true, false>(ptr, old_layout.size(), new_layout, self.shared)
+            }
         }
     }
 
@@ -575,7 +607,7 @@ where
         old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
-        LocalBlinkAlloc::resize(&self, ptr, old_layout.size(), new_layout)
+        LocalBlinkAlloc::resize(&self, ptr, old_layout, new_layout)
     }
 
     #[inline(always)]
@@ -585,7 +617,7 @@ where
         old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
-        LocalBlinkAlloc::resize(self, ptr, old_layout.size(), new_layout)
+        LocalBlinkAlloc::resize(self, ptr, old_layout, new_layout)
     }
 
     #[inline(always)]
@@ -595,7 +627,7 @@ where
         old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
-        LocalBlinkAlloc::resize_zeroed(&self, ptr, old_layout.size(), new_layout)
+        LocalBlinkAlloc::resize_zeroed(&self, ptr, old_layout, new_layout)
     }
 
     #[inline(always)]
@@ -610,7 +642,42 @@ where
 {
     #[inline(always)]
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-        LocalBlinkAlloc::allocate(&**self, layout)
+        LocalBlinkAlloc::allocate(self, layout)
+    }
+
+    #[inline(always)]
+    fn allocate_zeroed(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        LocalBlinkAlloc::allocate_zeroed(self, layout)
+    }
+
+    #[inline(always)]
+    unsafe fn shrink(
+        &self,
+        ptr: NonNull<u8>,
+        old_layout: Layout,
+        new_layout: Layout,
+    ) -> Result<NonNull<[u8]>, AllocError> {
+        LocalBlinkAlloc::resize(&self, ptr, old_layout, new_layout)
+    }
+
+    #[inline(always)]
+    unsafe fn grow(
+        &self,
+        ptr: NonNull<u8>,
+        old_layout: Layout,
+        new_layout: Layout,
+    ) -> Result<NonNull<[u8]>, AllocError> {
+        LocalBlinkAlloc::resize(self, ptr, old_layout, new_layout)
+    }
+
+    #[inline(always)]
+    unsafe fn grow_zeroed(
+        &self,
+        ptr: NonNull<u8>,
+        old_layout: Layout,
+        new_layout: Layout,
+    ) -> Result<NonNull<[u8]>, AllocError> {
+        LocalBlinkAlloc::resize_zeroed(&self, ptr, old_layout, new_layout)
     }
 
     #[inline(always)]

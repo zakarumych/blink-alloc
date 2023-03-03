@@ -452,7 +452,7 @@ where
     /// `ptr` must be a pointer to the allocated memory of at least `old_size` bytes.
     /// `ptr` may be allocated from different chunk.
     #[inline]
-    unsafe fn resize<const ZEROED: bool>(
+    unsafe fn resize<const ZEROED: bool, const ALIGNED: bool>(
         chunk: NonNull<Self>,
         ptr: NonNull<u8>,
         old_size: usize,
@@ -461,32 +461,61 @@ where
         // Safety: `chunk` is a valid pointer to chunk allocation.
         let me = unsafe { chunk.as_ref() };
 
+        let addr = sptr::Strict::addr(ptr.as_ptr());
+        if new_layout.size() == old_size {
+            if ALIGNED || addr & (new_layout.align() - 1) == 0 {
+                let slice = core::ptr::slice_from_raw_parts_mut(ptr.as_ptr(), new_layout.size());
+                return Ok(NonNull::new_unchecked(slice));
+            }
+        }
+
         // Safety:
         // `ptr + old_size` is within allocation or one by past end.
         let old_end = unsafe { ptr.as_ptr().add(old_size) };
 
-        let addr = sptr::Strict::addr(ptr.as_ptr());
-
         if new_layout.size() <= old_size {
-            // Try to shrink-shift.
-            if let Some(aligned_addr) = align_up(addr, new_layout.align()) {
-                let max_shift = old_size - new_layout.size();
-                if addr + max_shift >= aligned_addr {
-                    // Now fits.
-                    let aligned = ptr.as_ptr().add(aligned_addr - addr);
-
-                    memmove(ptr.as_ptr(), aligned, new_layout.size());
-
+            if ALIGNED {
+                let old_end = ptr.as_ptr().add(new_layout.size());
+                let new_end = ptr.as_ptr().add(new_layout.size());
+                if old_end != new_end {
+                    debug_assert!(old_end > new_end);
                     // Free if possible.
                     let _ = me.cursor.compare_exchange(
                         old_end,
-                        aligned.add(new_layout.size()),
+                        new_end,
                         Ordering::Release, // Released some memory.
                         Ordering::Relaxed,
                     );
+                }
 
-                    let slice = core::ptr::slice_from_raw_parts_mut(aligned, new_layout.size());
-                    return Ok(NonNull::new_unchecked(slice));
+                let slice = core::ptr::slice_from_raw_parts_mut(ptr.as_ptr(), new_layout.size());
+                return Ok(NonNull::new_unchecked(slice));
+            } else {
+                // Try to shrink-shift.
+                if let Some(aligned_addr) = align_up(addr, new_layout.align()) {
+                    let max_shift = old_size - new_layout.size();
+                    if addr + max_shift >= aligned_addr {
+                        // Now fits.
+                        let aligned = ptr.as_ptr().add(aligned_addr - addr);
+
+                        memmove(ptr.as_ptr(), aligned, new_layout.size());
+
+                        let new_end = aligned.add(new_layout.size());
+
+                        if old_end != new_end {
+                            debug_assert!(old_end > new_end);
+                            // Free if possible.
+                            let _ = me.cursor.compare_exchange(
+                                old_end,
+                                new_end,
+                                Ordering::Release, // Released some memory.
+                                Ordering::Relaxed,
+                            );
+                        }
+
+                        let slice = core::ptr::slice_from_raw_parts_mut(aligned, new_layout.size());
+                        return Ok(NonNull::new_unchecked(slice));
+                    }
                 }
             }
         }
@@ -495,9 +524,7 @@ where
         if cursor == old_end {
             // Possible to grow-shift.
 
-            let Some(unaligned) = addr.checked_add(layout_sum(&new_layout)) else {
-                // Impossible to grow or reallocate.
-
+            let unfit = || {
                 // Safety:
                 // `ptr` is always within `base..=self` range.
                 let used = unsafe { me.offset_from_base(ptr.as_ptr()) };
@@ -509,10 +536,27 @@ where
                 let min_grow = me.cap().checked_add(CHUNK_MIN_GROW_STEP);
 
                 // Returns the bigger one the two.
-                return Err(next_size.max(min_grow));
+                next_size.max(min_grow)
             };
 
-            let aligned_addr = align_down(unaligned - new_layout.size(), new_layout.align());
+            let aligned_addr;
+            let next_addr;
+
+            if ALIGNED {
+                let Some(next) = addr.checked_add(new_layout.size()) else {
+                    // Impossible to grow or reallocate.
+                    return Err(unfit());
+                };
+                next_addr = next;
+                aligned_addr = addr;
+            } else {
+                let Some(unaligned) = addr.checked_add(layout_sum(&new_layout)) else {
+                    // Impossible to grow or reallocate.
+                    return Err(unfit());
+                };
+                aligned_addr = align_down(unaligned - new_layout.size(), new_layout.align());
+                next_addr = aligned_addr + new_layout.size();
+            };
 
             debug_assert!(
                 aligned_addr >= addr,
@@ -522,8 +566,6 @@ where
                 (aligned_addr - addr) < new_layout.align(),
                 "Cannot waste space more than alignment size"
             );
-
-            let next_addr = aligned_addr + new_layout.size();
 
             let end_addr = sptr::Strict::addr(me.end);
             if next_addr > end_addr {
@@ -554,6 +596,8 @@ where
                 let slice = core::ptr::slice_from_raw_parts_mut(aligned, new_layout.size());
                 return Ok(NonNull::new_unchecked(slice));
             }
+
+            cold();
         }
 
         // Have to reallocate.
@@ -676,7 +720,7 @@ where
 }
 
 #[inline(always)]
-pub unsafe fn resize_fast<T, const ZEROED: bool>(
+pub unsafe fn resize_fast<T, const ZEROED: bool, const ALIGNED: bool>(
     root: Option<NonNull<ChunkHeader<T>>>,
     ptr: NonNull<u8>,
     old_size: usize,
@@ -688,7 +732,7 @@ where
     match root {
         Some(root) => {
             // Safety: `chunk` is a valid pointer to chunk allocation.
-            unsafe { ChunkHeader::resize::<ZEROED>(root, ptr, old_size, new_layout) }
+            unsafe { ChunkHeader::resize::<ZEROED, ALIGNED>(root, ptr, old_size, new_layout) }
         }
         None => {
             // Allocated memory block exists, so chunks must exist too.
@@ -799,7 +843,7 @@ pub trait Arena {
 
     /// Attempts to resize memory block previously allocated with `Arena`.
     /// If possible shrinks or grows in place.
-    unsafe fn resize<const ZEROED: bool>(
+    unsafe fn resize<const ZEROED: bool, const ALIGNED: bool>(
         &self,
         ptr: NonNull<u8>,
         old_size: usize,
@@ -893,14 +937,14 @@ impl Arena for ArenaLocal {
     }
 
     #[inline(always)]
-    unsafe fn resize<const ZEROED: bool>(
+    unsafe fn resize<const ZEROED: bool, const ALIGNED: bool>(
         &self,
         ptr: NonNull<u8>,
         old_size: usize,
         new_layout: Layout,
         allocator: &impl Allocator,
     ) -> Result<NonNull<[u8]>, AllocError> {
-        match resize_fast::<_, ZEROED>(self.root.get(), ptr, old_size, new_layout) {
+        match resize_fast::<_, ZEROED, ALIGNED>(self.root.get(), ptr, old_size, new_layout) {
             Ok(ptr) => Ok(ptr),
             Err(None) => Err(AllocError),
             Err(Some(chunk_size)) => resize_slow::<_, _, ZEROED>(
@@ -1007,7 +1051,7 @@ mod sync {
         }
 
         #[inline(always)]
-        unsafe fn resize<const ZEROED: bool>(
+        unsafe fn resize<const ZEROED: bool, const ALIGNED: bool>(
             &self,
             ptr: NonNull<u8>,
             old_size: usize,
@@ -1015,7 +1059,7 @@ mod sync {
             allocator: &impl Allocator,
         ) -> Result<NonNull<[u8]>, AllocError> {
             let inner = self.inner.read();
-            match resize_fast::<_, ZEROED>(inner.root, ptr, old_size, new_layout) {
+            match resize_fast::<_, ZEROED, ALIGNED>(inner.root, ptr, old_size, new_layout) {
                 Ok(ptr) => Ok(ptr),
                 Err(None) => Err(AllocError),
                 Err(Some(chunk_size)) => {
@@ -1051,6 +1095,8 @@ mod sync {
         }
     }
 }
+
+use crate::cold;
 
 #[cfg(feature = "sync")]
 pub use self::sync::ArenaSync;

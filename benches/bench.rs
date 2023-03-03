@@ -2,15 +2,20 @@
 
 use std::{
     alloc::System,
+    any::TypeId,
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use allocator_api2::alloc::{Allocator, GlobalAlloc, Layout};
+use allocator_api2::{
+    alloc::{Allocator, Layout},
+    vec::Vec,
+};
 use blink_alloc::*;
 use criterion::*;
 
 /// GlobalAlloc that counts the number of allocations and deallocations
 /// and number of bytes allocated and deallocated.
+#[cfg(feature = "bench-with-counting-allocator")]
 struct CountingGlobalAlloc {
     allocations: AtomicUsize,
     deallocations: AtomicUsize,
@@ -19,6 +24,7 @@ struct CountingGlobalAlloc {
     bytes_deallocated: AtomicUsize,
 }
 
+#[cfg(feature = "bench-with-counting-allocator")]
 impl CountingGlobalAlloc {
     pub const fn new() -> Self {
         CountingGlobalAlloc {
@@ -51,7 +57,8 @@ impl CountingGlobalAlloc {
     }
 }
 
-unsafe impl GlobalAlloc for CountingGlobalAlloc {
+#[cfg(feature = "bench-with-counting-allocator")]
+unsafe impl core::alloc::GlobalAlloc for CountingGlobalAlloc {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let ptr = System.alloc(layout);
         if !ptr.is_null() {
@@ -70,8 +77,21 @@ unsafe impl GlobalAlloc for CountingGlobalAlloc {
     }
 }
 
+#[cfg(feature = "bench-with-counting-allocator")]
 #[global_allocator]
 static COUNTING_ALLOCATOR: CountingGlobalAlloc = CountingGlobalAlloc::new();
+
+#[inline]
+fn print_mem_stat() {
+    #[cfg(feature = "bench-with-counting-allocator")]
+    COUNTING_ALLOCATOR.print_stat();
+}
+
+#[inline]
+fn reset_mem_stat() {
+    #[cfg(feature = "bench-with-counting-allocator")]
+    COUNTING_ALLOCATOR.reset_stat();
+}
 
 trait BumpAllocator
 where
@@ -225,45 +245,119 @@ impl Adaptor for bumpalo::Bump {
     }
 }
 
-const SIZES: [usize; 3] = [127, 1752, 45213];
+const SIZE: usize = 17453;
 
 fn bench_alloc<A>(name: &str, c: &mut Criterion)
 where
     for<'a> &'a A: Allocator,
-    A: BumpAllocator + Default,
+    A: BumpAllocator + Default + 'static,
 {
     let mut group = c.benchmark_group(format!("allocation/{name}"));
 
-    COUNTING_ALLOCATOR.reset_stat();
+    reset_mem_stat();
     let mut alloc = A::default();
 
     // Pre-warm the allocator
     (&alloc).allocate(Layout::new::<[u32; 65536]>()).unwrap();
     alloc.reset();
 
-    for size in SIZES {
-        group.bench_function(format!("alloc 4 bytes x {size}"), |b| {
-            b.iter(|| {
-                for _ in 0..size {
-                    black_box((&alloc).allocate(Layout::new::<u32>()).unwrap());
-                }
-                alloc.reset();
-            })
-        });
-    }
+    group.bench_function(format!("alloc x {SIZE}"), |b| {
+        b.iter(|| {
+            for _ in 0..SIZE {
+                black_box((&alloc).allocate(Layout::new::<u32>()).unwrap());
+            }
+            alloc.reset();
+        })
+    });
 
-    COUNTING_ALLOCATOR.print_stat();
-    COUNTING_ALLOCATOR.reset_stat();
+    print_mem_stat();
+    reset_mem_stat();
     // let mut alloc = A::default();
 
-    for size in SIZES {
-        group.bench_function(format!("alloc 4 bytes, resize to 8 bytes x {size}"), |b| {
+    group.bench_function(format!("grow same align x {SIZE}"), |b| {
+        b.iter(|| {
+            for _ in 0..SIZE {
+                unsafe {
+                    let ptr = (&alloc).allocate(Layout::new::<u32>()).unwrap();
+                    let ptr = (&alloc)
+                        .grow(ptr.cast(), Layout::new::<u32>(), Layout::new::<[u32; 2]>())
+                        .unwrap();
+                    black_box(ptr);
+                }
+            }
+            alloc.reset();
+        })
+    });
+
+    group.bench_function(format!("grow smaller align x {SIZE}"), |b| {
+        b.iter(|| {
+            for _ in 0..SIZE {
+                unsafe {
+                    let ptr = (&alloc).allocate(Layout::new::<u32>()).unwrap();
+                    let ptr = (&alloc)
+                        .grow(ptr.cast(), Layout::new::<u32>(), Layout::new::<[u16; 4]>())
+                        .unwrap();
+                    black_box(ptr);
+                }
+            }
+            alloc.reset();
+        })
+    });
+
+    group.bench_function(format!("grow larger align x {SIZE}"), |b| {
+        b.iter(|| {
+            for _ in 0..SIZE {
+                unsafe {
+                    let ptr = (&alloc).allocate(Layout::new::<u32>()).unwrap();
+                    let ptr = (&alloc)
+                        .grow(ptr.cast(), Layout::new::<u32>(), Layout::new::<u64>())
+                        .unwrap();
+                    black_box(ptr);
+                }
+            }
+            alloc.reset();
+        })
+    });
+
+    group.bench_function(format!("shrink same align x {SIZE}"), |b| {
+        b.iter(|| {
+            for _ in 0..SIZE {
+                unsafe {
+                    let ptr = (&alloc).allocate(Layout::new::<[u32; 2]>()).unwrap();
+                    let ptr = (&alloc)
+                        .shrink(ptr.cast(), Layout::new::<[u32; 2]>(), Layout::new::<u32>())
+                        .unwrap();
+                    black_box(ptr);
+                }
+            }
+            alloc.reset();
+        })
+    });
+
+    group.bench_function(format!("shrink smaller align x {SIZE}"), |b| {
+        b.iter(|| {
+            for _ in 0..SIZE {
+                unsafe {
+                    let ptr = (&alloc).allocate(Layout::new::<u32>()).unwrap();
+                    let ptr = (&alloc)
+                        .shrink(ptr.cast(), Layout::new::<u32>(), Layout::new::<u16>())
+                        .unwrap();
+                    black_box(ptr);
+                }
+            }
+            alloc.reset();
+        })
+    });
+
+    if TypeId::of::<A>() != TypeId::of::<bumpalo::Bump>() {
+        group.bench_function(format!("shrink larger align x {SIZE}"), |b| {
             b.iter(|| {
-                for _ in 0..size {
+                for _ in 0..SIZE {
                     unsafe {
-                        let layouts = [Layout::new::<u32>(), Layout::new::<u64>()];
-                        let ptr = (&alloc).allocate(layouts[0]).unwrap();
-                        let ptr = (&alloc).grow(ptr.cast(), layouts[0], layouts[1]).unwrap();
+                        let ptr = (&alloc).allocate(Layout::new::<[u32; 4]>()).unwrap();
+                        let ptr = (&alloc)
+                            .shrink(ptr.cast(), Layout::new::<[u32; 4]>(), Layout::new::<u64>())
+                            .unwrap();
                         black_box(ptr);
                     }
                 }
@@ -272,7 +366,7 @@ where
         });
     }
 
-    COUNTING_ALLOCATOR.print_stat();
+    print_mem_stat();
 
     group.finish();
 }
@@ -284,20 +378,60 @@ where
 {
     let mut group = c.benchmark_group(format!("warm-up/{name}"));
 
-    COUNTING_ALLOCATOR.reset_stat();
+    reset_mem_stat();
 
-    for size in SIZES {
-        group.bench_function(format!("alloc 4 bytes x {size}"), |b| {
-            b.iter(|| {
-                let alloc = A::default();
-                for _ in 0..size {
-                    black_box((&alloc).allocate(Layout::new::<u32>()).unwrap());
-                }
-            })
-        });
-    }
+    group.bench_function(format!("alloc 4 bytes x {SIZE}"), |b| {
+        b.iter(|| {
+            let alloc = A::default();
+            for _ in 0..SIZE {
+                black_box((&alloc).allocate(Layout::new::<u32>()).unwrap());
+            }
+        })
+    });
 
-    COUNTING_ALLOCATOR.print_stat();
+    print_mem_stat();
+    group.finish();
+}
+
+fn bench_vec<A>(name: &str, c: &mut Criterion)
+where
+    for<'a> &'a A: Allocator,
+    A: BumpAllocator + Default,
+{
+    let mut group = c.benchmark_group(format!("vec/{name}"));
+
+    reset_mem_stat();
+    let mut alloc = A::default();
+
+    // Pre-warm the allocator
+    (&alloc).allocate(Layout::new::<[u32; 65536]>()).unwrap();
+    alloc.reset();
+
+    group.bench_function(format!("push x {SIZE}"), |b| {
+        b.iter(|| {
+            let mut vec = Vec::new_in(&alloc);
+            for i in 0..SIZE {
+                vec.push(i);
+            }
+            drop(vec);
+            alloc.reset();
+        })
+    });
+
+    group.bench_function(format!("reserve_exact(1) x {SIZE}"), |b| {
+        b.iter(|| {
+            let mut vec = Vec::<u32, &A>::new_in(&alloc);
+            for i in 0..SIZE {
+                vec.reserve_exact(i);
+            }
+            drop(vec);
+            alloc.reset();
+        })
+    });
+
+    print_mem_stat();
+    reset_mem_stat();
+
     group.finish();
 }
 
@@ -307,99 +441,93 @@ where
 {
     let mut group = c.benchmark_group(format!("from-iter/{name}"));
 
-    COUNTING_ALLOCATOR.reset_stat();
+    reset_mem_stat();
     let mut adaptor = A::default();
 
     // Pre-warm the allocator
-    adaptor.from_iter((0..65536).map(|_| 0u32));
+    adaptor.from_exact_size_iter_no_drop((0..65536).map(|_| 0u32));
     adaptor.reset();
 
     if A::CAN_DROP && A::ANY_ITER {
-        for size in SIZES {
-            group.bench_function(format!("basic x {size}"), |b| {
-                b.iter(|| {
-                    for _ in 0..size {
-                        black_box(adaptor.from_iter((0..size).map(|_| black_box(0u32))));
-                    }
-                    adaptor.reset();
-                })
-            });
-        }
+        group.bench_function(format!("basic x {SIZE}"), |b| {
+            b.iter(|| {
+                for _ in 0..SIZE {
+                    black_box(adaptor.from_iter((0..111).map(|_| black_box(0u32))));
+                }
+                adaptor.reset();
+            })
+        });
 
-        COUNTING_ALLOCATOR.print_stat();
-        COUNTING_ALLOCATOR.reset_stat();
+        print_mem_stat();
+        reset_mem_stat();
     }
 
-    for size in SIZES {
-        group.bench_function(format!("no-drop x {size}"), |b| {
+    group.bench_function(format!("no-drop x {SIZE}"), |b| {
+        b.iter(|| {
+            for _ in 0..SIZE {
+                black_box(adaptor.from_exact_size_iter_no_drop((0..111).map(|_| black_box(0u32))));
+            }
+            adaptor.reset();
+        })
+    });
+
+    print_mem_stat();
+    reset_mem_stat();
+
+    if A::CAN_DROP && A::ANY_ITER {
+        group.bench_function(format!("bad-filter x {SIZE}"), |b| {
             b.iter(|| {
-                for _ in 0..size {
+                for _ in 0..SIZE {
                     black_box(
-                        adaptor.from_exact_size_iter_no_drop((0..size).map(|_| black_box(0u32))),
+                        adaptor.from_iter(
+                            (0..111)
+                                .filter(|_| black_box(true))
+                                .map(|_| black_box(0u32)),
+                        ),
                     );
                 }
                 adaptor.reset();
             })
         });
-    }
 
-    COUNTING_ALLOCATOR.print_stat();
-    COUNTING_ALLOCATOR.reset_stat();
-
-    if A::CAN_DROP && A::ANY_ITER {
-        for size in SIZES {
-            group.bench_function(format!("bad-filter x {size}"), |b| {
-                b.iter(|| {
-                    for _ in 0..size {
-                        black_box(
-                            adaptor.from_iter(
-                                (0..size)
-                                    .filter(|_| black_box(true))
-                                    .map(|_| black_box(0u32)),
-                            ),
-                        );
-                    }
-                    adaptor.reset();
-                })
-            });
-        }
-
-        COUNTING_ALLOCATOR.print_stat();
-        COUNTING_ALLOCATOR.reset_stat();
+        print_mem_stat();
+        reset_mem_stat();
     }
 
     if A::ANY_ITER {
-        for size in SIZES {
-            group.bench_function(format!("bad-filter no-drop x {size}"), |b| {
-                b.iter(|| {
-                    for _ in 0..size {
-                        black_box(
-                            adaptor.from_iter_no_drop(
-                                (0..size)
-                                    .filter(|_| black_box(true))
-                                    .map(|_| black_box(0u32)),
-                            ),
-                        );
-                    }
-                    adaptor.reset();
-                })
-            });
-        }
+        group.bench_function(format!("bad-filter no-drop x {SIZE}"), |b| {
+            b.iter(|| {
+                for _ in 0..SIZE {
+                    black_box(
+                        adaptor.from_iter_no_drop(
+                            (0..111)
+                                .filter(|_| black_box(true))
+                                .map(|_| black_box(0u32)),
+                        ),
+                    );
+                }
+                adaptor.reset();
+            })
+        });
 
-        COUNTING_ALLOCATOR.print_stat();
+        print_mem_stat();
     }
 
     group.finish();
 }
 
 pub fn criterion_benchmark(c: &mut Criterion) {
-    bench_alloc::<BlinkAlloc>("blink_alloc::BlinkAlloc", c);
-    bench_alloc::<SyncBlinkAlloc>("blink_alloc::SyncBlinkAlloc", c);
-    bench_alloc::<bumpalo::Bump>("bumpalo::Bump", c);
+    // bench_alloc::<BlinkAlloc>("blink_alloc::BlinkAlloc", c);
+    // bench_alloc::<SyncBlinkAlloc>("blink_alloc::SyncBlinkAlloc", c);
+    // bench_alloc::<bumpalo::Bump>("bumpalo::Bump", c);
 
-    bench_warm_up::<BlinkAlloc>("blink_alloc::BlinkAlloc", c);
-    bench_warm_up::<SyncBlinkAlloc>("blink_alloc::SyncBlinkAlloc", c);
-    bench_warm_up::<bumpalo::Bump>("bumpalo::Bump", c);
+    // bench_warm_up::<BlinkAlloc>("blink_alloc::BlinkAlloc", c);
+    // bench_warm_up::<SyncBlinkAlloc>("blink_alloc::SyncBlinkAlloc", c);
+    // bench_warm_up::<bumpalo::Bump>("bumpalo::Bump", c);
+
+    // bench_vec::<BlinkAlloc>("blink_alloc::BlinkAlloc", c);
+    // bench_vec::<SyncBlinkAlloc>("blink_alloc::SyncBlinkAlloc", c);
+    // bench_vec::<bumpalo::Bump>("bumpalo::Bump", c);
 
     bench_from_iter::<Blink<BlinkAlloc>>("blink_alloc::BlinkAlloc", c);
     bench_from_iter::<Blink<SyncBlinkAlloc>>("blink_alloc::SyncBlinkAlloc", c);

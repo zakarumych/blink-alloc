@@ -75,3 +75,6 @@ unsafe fn in_place<'a, T, I>(ptr: *mut T, init: I, f: impl FnOnce(I) -> T) -> &'
     core::ptr::write(ptr, f(init));
     &mut *ptr
 }
+
+#[cold]
+fn cold() {}
