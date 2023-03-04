@@ -452,153 +452,206 @@ where
     /// `ptr` must be a pointer to the allocated memory of at least `old_size` bytes.
     /// `ptr` may be allocated from different chunk.
     #[inline]
-    unsafe fn resize<const ZEROED: bool, const ALIGNED: bool>(
+    unsafe fn resize<const ZEROED: bool>(
         chunk: NonNull<Self>,
         ptr: NonNull<u8>,
-        old_size: usize,
+        old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, Option<usize>> {
         // Safety: `chunk` is a valid pointer to chunk allocation.
         let me = unsafe { chunk.as_ref() };
 
         let addr = sptr::Strict::addr(ptr.as_ptr());
-        if new_layout.size() == old_size {
-            if ALIGNED || addr & (new_layout.align() - 1) == 0 {
-                let slice = core::ptr::slice_from_raw_parts_mut(ptr.as_ptr(), new_layout.size());
-                return Ok(NonNull::new_unchecked(slice));
-            }
-        }
-
-        // Safety:
-        // `ptr + old_size` is within allocation or one by past end.
-        let old_end = unsafe { ptr.as_ptr().add(old_size) };
-
-        if new_layout.size() <= old_size {
-            if ALIGNED {
-                let old_end = ptr.as_ptr().add(new_layout.size());
-                let new_end = ptr.as_ptr().add(new_layout.size());
-                if old_end != new_end {
-                    debug_assert!(old_end > new_end);
-                    // Free if possible.
-                    let _ = me.cursor.compare_exchange(
-                        old_end,
-                        new_end,
-                        Ordering::Release, // Released some memory.
-                        Ordering::Relaxed,
-                    );
-                }
-
+        if old_layout.align() >= new_layout.align() {// || addr & (new_layout.align() - 1) == 0 {
+            if new_layout.size() <= old_layout.size() {
                 let slice = core::ptr::slice_from_raw_parts_mut(ptr.as_ptr(), new_layout.size());
                 return Ok(NonNull::new_unchecked(slice));
             } else {
-                // Try to shrink-shift.
-                if let Some(aligned_addr) = align_up(addr, new_layout.align()) {
-                    let max_shift = old_size - new_layout.size();
-                    if addr + max_shift >= aligned_addr {
-                        // Now fits.
-                        let aligned = ptr.as_ptr().add(aligned_addr - addr);
+                // Safety:
+                // `ptr + old_layout.size()` is within allocation or one by past end.
+                let old_end = unsafe { ptr.as_ptr().add(old_layout.size()) };
 
-                        memmove(ptr.as_ptr(), aligned, new_layout.size());
+                let cursor = me.cursor.load(Ordering::Relaxed);
+                if cursor == old_end {
+                    let Some(next_addr) = addr.checked_add(new_layout.size()) else {
+                        // Impossible to grow or reallocate.
+                        
+                        // Safety:
+                        // `ptr` is always within `base..=self` range.
+                        let used = unsafe { me.offset_from_base(ptr.as_ptr()) };
 
-                        let new_end = aligned.add(new_layout.size());
+                        // Find size that will fit previous allocation and the new one.
+                        let next_size = layout_sum(&new_layout).checked_add(used).ok_or(None)?;
 
-                        if old_end != new_end {
-                            debug_assert!(old_end > new_end);
-                            // Free if possible.
-                            let _ = me.cursor.compare_exchange(
-                                old_end,
-                                new_end,
-                                Ordering::Release, // Released some memory.
-                                Ordering::Relaxed,
+                        // Minimal grow step.
+                        let min_grow = me.cap().checked_add(CHUNK_MIN_GROW_STEP).ok_or(None)?;
+
+                        // Returns the bigger one the two.
+                        return Err(Some(next_size.max(min_grow)))
+                    };
+
+                    let end_addr = sptr::Strict::addr(me.end);
+                    if next_addr > end_addr {
+                        // Not enough space.
+                        return Err((next_addr - end_addr).checked_add(me.cap()));
+                    }
+
+                    let next = unsafe { ptr.as_ptr().add(new_layout.size()) };
+
+                    let result = me.cursor.compare_exchange(
+                        cursor,
+                        next,
+                        Ordering::Acquire, // Acquire more memory.
+                        Ordering::Relaxed,
+                    );
+
+                    if let Ok(()) = result {
+                        if ZEROED && old_layout.size() < new_layout.size() {
+                            core::ptr::write_bytes(
+                                ptr.as_ptr().add(old_layout.size()),
+                                0,
+                                new_layout.size() - old_layout.size(),
                             );
                         }
 
-                        let slice = core::ptr::slice_from_raw_parts_mut(aligned, new_layout.size());
+                        let slice =
+                            core::ptr::slice_from_raw_parts_mut(ptr.as_ptr(), new_layout.size());
                         return Ok(NonNull::new_unchecked(slice));
                     }
+                    cold();
                 }
             }
-        }
-
-        let cursor = me.cursor.load(Ordering::Relaxed);
-        if cursor == old_end {
-            // Possible to grow-shift.
-
-            let unfit = || {
-                // Safety:
-                // `ptr` is always within `base..=self` range.
-                let used = unsafe { me.offset_from_base(ptr.as_ptr()) };
-
-                // Find size that will fit previous allocation and the new one.
-                let next_size = layout_sum(&new_layout).checked_add(used);
-
-                // Minimal grow step.
-                let min_grow = me.cap().checked_add(CHUNK_MIN_GROW_STEP);
-
-                // Returns the bigger one the two.
-                next_size.max(min_grow)
-            };
-
-            let aligned_addr;
-            let next_addr;
-
-            if ALIGNED {
-                let Some(next) = addr.checked_add(new_layout.size()) else {
-                    // Impossible to grow or reallocate.
-                    return Err(unfit());
-                };
-                next_addr = next;
-                aligned_addr = addr;
-            } else {
-                let Some(unaligned) = addr.checked_add(layout_sum(&new_layout)) else {
-                    // Impossible to grow or reallocate.
-                    return Err(unfit());
-                };
-                aligned_addr = align_down(unaligned - new_layout.size(), new_layout.align());
-                next_addr = aligned_addr + new_layout.size();
-            };
-
-            debug_assert!(
-                aligned_addr >= addr,
-                "aligned_addr must not be less than addr"
-            );
-            debug_assert!(
-                (aligned_addr - addr) < new_layout.align(),
-                "Cannot waste space more than alignment size"
-            );
-
-            let end_addr = sptr::Strict::addr(me.end);
-            if next_addr > end_addr {
-                // Not enough space.
-                return Err((next_addr - end_addr).checked_add(me.cap()));
-            }
-
-            let cursor_addr = sptr::Strict::addr(cursor);
-            let aligned = unsafe { cursor.offset(aligned_addr as isize - cursor_addr as isize) };
-            let next = unsafe { aligned.add(new_layout.size()) };
-
-            let result = me.cursor.compare_exchange(
-                old_end,
-                next,
-                Ordering::Acquire, // Acquire more memory.
-                Ordering::Relaxed,
-            );
-
-            if let Ok(()) = result {
-                // Move bytes from old location to new.
-                // Use smaller size of the old and new allocation.
-                memmove(ptr.as_ptr(), aligned, new_layout.size().min(old_size));
-
-                if ZEROED && old_size < new_layout.size() {
-                    core::ptr::write_bytes(aligned.add(old_size), 0, new_layout.size() - old_size);
-                }
-
-                let slice = core::ptr::slice_from_raw_parts_mut(aligned, new_layout.size());
-                return Ok(NonNull::new_unchecked(slice));
-            }
-
+        } else {
             cold();
         }
+
+
+        // if new_layout.size() <= old_size {
+        //     if ALIGNED {
+        //         let old_end = ptr.as_ptr().add(new_layout.size());
+        //         let new_end = ptr.as_ptr().add(new_layout.size());
+        //         if old_end != new_end {
+        //             debug_assert!(old_end > new_end);
+        //             // Free if possible.
+        //             let _ = me.cursor.compare_exchange(
+        //                 old_end,
+        //                 new_end,
+        //                 Ordering::Release, // Released some memory.
+        //                 Ordering::Relaxed,
+        //             );
+        //         }
+
+        //         let slice = core::ptr::slice_from_raw_parts_mut(ptr.as_ptr(), new_layout.size());
+        //         return Ok(NonNull::new_unchecked(slice));
+        //     } else {
+        //         // Try to shrink-shift.
+        //         if let Some(aligned_addr) = align_up(addr, new_layout.align()) {
+        //             let max_shift = old_size - new_layout.size();
+        //             if addr + max_shift >= aligned_addr {
+        //                 // Now fits.
+        //                 let aligned = ptr.as_ptr().add(aligned_addr - addr);
+
+        //                 memmove(ptr.as_ptr(), aligned, new_layout.size());
+
+        //                 let new_end = aligned.add(new_layout.size());
+
+        //                 if old_end != new_end {
+        //                     debug_assert!(old_end > new_end);
+        //                     // Free if possible.
+        //                     let _ = me.cursor.compare_exchange(
+        //                         old_end,
+        //                         new_end,
+        //                         Ordering::Release, // Released some memory.
+        //                         Ordering::Relaxed,
+        //                     );
+        //                 }
+
+        //                 let slice = core::ptr::slice_from_raw_parts_mut(aligned, new_layout.size());
+        //                 return Ok(NonNull::new_unchecked(slice));
+        //             }
+        //         }
+        //     }
+        // }
+
+        // let cursor = me.cursor.load(Ordering::Relaxed);
+        // if cursor == old_end {
+        //     // Possible to grow-shift.
+
+        //     let unfit = || {
+        //         // Safety:
+        //         // `ptr` is always within `base..=self` range.
+        //         let used = unsafe { me.offset_from_base(ptr.as_ptr()) };
+
+        //         // Find size that will fit previous allocation and the new one.
+        //         let next_size = layout_sum(&new_layout).checked_add(used);
+
+        //         // Minimal grow step.
+        //         let min_grow = me.cap().checked_add(CHUNK_MIN_GROW_STEP);
+
+        //         // Returns the bigger one the two.
+        //         next_size.max(min_grow)
+        //     };
+
+        //     let aligned_addr;
+        //     let next_addr;
+
+        //     if ALIGNED {
+        //         let Some(next) = addr.checked_add(new_layout.size()) else {
+        //             // Impossible to grow or reallocate.
+        //             return Err(unfit());
+        //         };
+        //         next_addr = next;
+        //         aligned_addr = addr;
+        //     } else {
+        //         let Some(unaligned) = addr.checked_add(layout_sum(&new_layout)) else {
+        //             // Impossible to grow or reallocate.
+        //             return Err(unfit());
+        //         };
+        //         aligned_addr = align_down(unaligned - new_layout.size(), new_layout.align());
+        //         next_addr = aligned_addr + new_layout.size();
+        //     };
+
+        //     debug_assert!(
+        //         aligned_addr >= addr,
+        //         "aligned_addr must not be less than addr"
+        //     );
+        //     debug_assert!(
+        //         (aligned_addr - addr) < new_layout.align(),
+        //         "Cannot waste space more than alignment size"
+        //     );
+
+        //     let end_addr = sptr::Strict::addr(me.end);
+        //     if next_addr > end_addr {
+        //         // Not enough space.
+        //         return Err((next_addr - end_addr).checked_add(me.cap()));
+        //     }
+
+        //     let cursor_addr = sptr::Strict::addr(cursor);
+        //     let aligned = unsafe { cursor.offset(aligned_addr as isize - cursor_addr as isize) };
+        //     let next = unsafe { aligned.add(new_layout.size()) };
+
+        //     let result = me.cursor.compare_exchange(
+        //         old_end,
+        //         next,
+        //         Ordering::Acquire, // Acquire more memory.
+        //         Ordering::Relaxed,
+        //     );
+
+        //     if let Ok(()) = result {
+        //         // Move bytes from old location to new.
+        //         // Use smaller size of the old and new allocation.
+        //         memmove(ptr.as_ptr(), aligned, new_layout.size().min(old_size));
+
+        //         if ZEROED && old_size < new_layout.size() {
+        //             core::ptr::write_bytes(aligned.add(old_size), 0, new_layout.size() - old_size);
+        //         }
+
+        //         let slice = core::ptr::slice_from_raw_parts_mut(aligned, new_layout.size());
+        //         return Ok(NonNull::new_unchecked(slice));
+        //     }
+
+        //     cold();
+        // }
 
         // Have to reallocate.
         let new_ptr = ChunkHeader::alloc::<false>(chunk, new_layout)?;
@@ -608,14 +661,14 @@ where
         core::ptr::copy_nonoverlapping(
             ptr.as_ptr(),
             new_ptr.as_ptr().cast(),
-            new_layout.size().min(old_size),
+            new_layout.size().min(old_layout.size()),
         );
 
-        if ZEROED && old_size < new_layout.size() {
+        if ZEROED && old_layout.size() < new_layout.size() {
             core::ptr::write_bytes(
                 new_ptr.as_ptr().cast::<u8>(),
                 0,
-                new_layout.size() - old_size,
+                new_layout.size() - old_layout.size(),
             );
         }
 
@@ -634,28 +687,28 @@ where
         me.prev.take()
     }
 
-    // Safety: `chunk` must be a pointer to the valid chunk allocation.
-    // `ptr` must be a pointer to the allocated memory of at least `size` bytes.
-    // `ptr` may be allocated from different chunk.
-    #[inline(always)]
-    unsafe fn dealloc(chunk: NonNull<Self>, ptr: NonNull<u8>, size: usize) {
-        // Safety: `chunk` is a valid pointer to chunk allocation.
-        let me = unsafe { chunk.as_ref() };
+    // // Safety: `chunk` must be a pointer to the valid chunk allocation.
+    // // `ptr` must be a pointer to the allocated memory of at least `size` bytes.
+    // // `ptr` may be allocated from different chunk.
+    // #[inline(always)]
+    // unsafe fn dealloc(chunk: NonNull<Self>, ptr: NonNull<u8>, size: usize) {
+    //     // Safety: `chunk` is a valid pointer to chunk allocation.
+    //     let me = unsafe { chunk.as_ref() };
 
-        // Safety: `ptr` is a valid pointer to the allocated memory of at least `size` bytes.
-        let new = unsafe { ptr.as_ptr().add(size) };
+    //     // Safety: `ptr` is a valid pointer to the allocated memory of at least `size` bytes.
+    //     let new = unsafe { ptr.as_ptr().add(size) };
 
-        // Single attempt to update cursor.
-        // Fails if `ptr` is not the last memory allocated from this chunk.
-        // Spurious failures in multithreaded environment are possible
-        // but do not affect correctness.
-        let _ = me.cursor.compare_exchange(
-            ptr.as_ptr(),
-            new,
-            Ordering::Release, // Released some memory.
-            Ordering::Relaxed,
-        );
-    }
+    //     // Single attempt to update cursor.
+    //     // Fails if `ptr` is not the last memory allocated from this chunk.
+    //     // Spurious failures in multithreaded environment are possible
+    //     // but do not affect correctness.
+    //     let _ = me.cursor.compare_exchange(
+    //         ptr.as_ptr(),
+    //         new,
+    //         Ordering::Release, // Released some memory.
+    //         Ordering::Relaxed,
+    //     );
+    // }
 }
 
 #[inline(always)]
@@ -720,10 +773,10 @@ where
 }
 
 #[inline(always)]
-pub unsafe fn resize_fast<T, const ZEROED: bool, const ALIGNED: bool>(
+pub unsafe fn resize_fast<T, const ZEROED: bool>(
     root: Option<NonNull<ChunkHeader<T>>>,
     ptr: NonNull<u8>,
-    old_size: usize,
+    old_layout: Layout,
     new_layout: Layout,
 ) -> Result<NonNull<[u8]>, Option<usize>>
 where
@@ -732,7 +785,7 @@ where
     match root {
         Some(root) => {
             // Safety: `chunk` is a valid pointer to chunk allocation.
-            unsafe { ChunkHeader::resize::<ZEROED, ALIGNED>(root, ptr, old_size, new_layout) }
+            unsafe { ChunkHeader::resize::<ZEROED>(root, ptr, old_layout, new_layout) }
         }
         None => {
             // Allocated memory block exists, so chunks must exist too.
@@ -746,7 +799,7 @@ pub unsafe fn resize_slow<T, A, const ZEROED: bool>(
     root: impl Mut<Option<NonNull<ChunkHeader<T>>>>,
     chunk_size: usize,
     ptr: NonNull<u8>,
-    old_size: usize,
+    old_layout: Layout,
     new_layout: Layout,
     allocator: &A,
 ) -> Result<NonNull<[u8]>, AllocError>
@@ -758,29 +811,29 @@ where
     core::ptr::copy_nonoverlapping(
         ptr.as_ptr(),
         new_ptr.as_ptr().cast(),
-        new_layout.size().min(old_size),
+        new_layout.size().min(old_layout.size()),
     );
-    if ZEROED && old_size < new_layout.size() {
-        core::ptr::write_bytes(ptr.as_ptr().add(old_size), 0, new_layout.size() - old_size);
+    if ZEROED && old_layout.size() < new_layout.size() {
+        core::ptr::write_bytes(ptr.as_ptr().add(old_layout.size()), 0, new_layout.size() - old_layout.size());
     }
     // Deallocation is impossible.
     Ok(new_ptr)
 }
 
-#[inline(always)]
-pub unsafe fn dealloc<T>(root: Option<NonNull<ChunkHeader<T>>>, ptr: NonNull<u8>, size: usize)
-where
-    T: CasPtr,
-{
-    if let Some(root) = root {
-        // Safety:
-        // `chunk` is a valid pointer to chunk allocation.
-        // `ptr` is a valid pointer to the allocated memory of at least `size` bytes.
-        unsafe {
-            ChunkHeader::dealloc(root, ptr, size);
-        }
-    }
-}
+// #[inline(always)]
+// pub unsafe fn dealloc<T>(root: Option<NonNull<ChunkHeader<T>>>, ptr: NonNull<u8>, size: usize)
+// where
+//     T: CasPtr,
+// {
+//     if let Some(root) = root {
+//         // Safety:
+//         // `chunk` is a valid pointer to chunk allocation.
+//         // `ptr` is a valid pointer to the allocated memory of at least `size` bytes.
+//         unsafe {
+//             ChunkHeader::dealloc(root, ptr, size);
+//         }
+//     }
+// }
 
 /// Safety:
 /// `allocator` must be the same allocator that was used in `alloc`.
@@ -843,18 +896,18 @@ pub trait Arena {
 
     /// Attempts to resize memory block previously allocated with `Arena`.
     /// If possible shrinks or grows in place.
-    unsafe fn resize<const ZEROED: bool, const ALIGNED: bool>(
+    unsafe fn resize<const ZEROED: bool>(
         &self,
         ptr: NonNull<u8>,
-        old_size: usize,
+        old_layout: Layout,
         new_layout: Layout,
         allocator: &impl Allocator,
     ) -> Result<NonNull<[u8]>, AllocError>;
 
-    /// Deallocates memory that was previously allocated with `alloc`.
-    /// If `ptr` points to the very last allocation, bumps cursor back.
-    /// Otherwise does nothing.
-    unsafe fn dealloc(&self, ptr: NonNull<u8>, size: usize);
+    // /// Deallocates memory that was previously allocated with `alloc`.
+    // /// If `ptr` points to the very last allocation, bumps cursor back.
+    // /// Otherwise does nothing.
+    // unsafe fn dealloc(&self, ptr: NonNull<u8>, size: usize);
 
     /// Reset this arena, invalidating all previous allocations.
     /// Chunks are deallocated with `allocator`.
@@ -937,31 +990,31 @@ impl Arena for ArenaLocal {
     }
 
     #[inline(always)]
-    unsafe fn resize<const ZEROED: bool, const ALIGNED: bool>(
+    unsafe fn resize<const ZEROED: bool>(
         &self,
         ptr: NonNull<u8>,
-        old_size: usize,
+        old_layout: Layout,
         new_layout: Layout,
         allocator: &impl Allocator,
     ) -> Result<NonNull<[u8]>, AllocError> {
-        match resize_fast::<_, ZEROED, ALIGNED>(self.root.get(), ptr, old_size, new_layout) {
+        match resize_fast::<_, ZEROED>(self.root.get(), ptr, old_layout, new_layout) {
             Ok(ptr) => Ok(ptr),
             Err(None) => Err(AllocError),
             Err(Some(chunk_size)) => resize_slow::<_, _, ZEROED>(
                 &self.root,
                 chunk_size.max(self.min_chunk_size.get()),
                 ptr,
-                old_size,
+                old_layout,
                 new_layout,
                 allocator,
             ),
         }
     }
 
-    #[inline(always)]
-    unsafe fn dealloc(&self, ptr: NonNull<u8>, size: usize) {
-        dealloc(self.root.get(), ptr, size)
-    }
+    // #[inline(always)]
+    // unsafe fn dealloc(&self, ptr: NonNull<u8>, size: usize) {
+    //     dealloc(self.root.get(), ptr, size)
+    // }
 
     #[inline(always)]
     unsafe fn reset(&mut self, keep_last: bool, allocator: &impl Allocator) {
@@ -1051,15 +1104,15 @@ mod sync {
         }
 
         #[inline(always)]
-        unsafe fn resize<const ZEROED: bool, const ALIGNED: bool>(
+        unsafe fn resize<const ZEROED: bool>(
             &self,
             ptr: NonNull<u8>,
-            old_size: usize,
+            old_layout: Layout,
             new_layout: Layout,
             allocator: &impl Allocator,
         ) -> Result<NonNull<[u8]>, AllocError> {
             let inner = self.inner.read();
-            match resize_fast::<_, ZEROED, ALIGNED>(inner.root, ptr, old_size, new_layout) {
+            match resize_fast::<_, ZEROED>(inner.root, ptr, old_layout, new_layout) {
                 Ok(ptr) => Ok(ptr),
                 Err(None) => Err(AllocError),
                 Err(Some(chunk_size)) => {
@@ -1071,7 +1124,7 @@ mod sync {
                         &mut inner.root,
                         chunk_size.max(inner.min_chunk_size),
                         ptr,
-                        old_size,
+                        old_layout,
                         new_layout,
                         allocator,
                     )
@@ -1079,10 +1132,10 @@ mod sync {
             }
         }
 
-        #[inline(always)]
-        unsafe fn dealloc(&self, ptr: NonNull<u8>, size: usize) {
-            dealloc(self.inner.read().root, ptr, size)
-        }
+        // #[inline(always)]
+        // unsafe fn dealloc(&self, ptr: NonNull<u8>, size: usize) {
+        //     dealloc(self.inner.read().root, ptr, size)
+        // }
 
         #[inline(always)]
         unsafe fn reset(&mut self, keep_last: bool, allocator: &impl Allocator) {

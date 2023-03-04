@@ -75,7 +75,6 @@ with_global_default! {
     ///
     /// unsafe {
     ///     std::ptr::write(ptr.as_ptr().cast(), [1, 2, 3, 4, 5, 6, 7, 8]);
-    ///     blink.deallocate(ptr, layout.size());
     /// }
     ///
     /// blink.reset();
@@ -261,21 +260,8 @@ where
         // Safety:
         // Same instance is used for all allocations and resets.
         unsafe {
-            if old_layout.align() >= new_layout.align() {
-                self.arena.resize::<false, true>(
-                    ptr,
-                    old_layout.size(),
-                    new_layout,
-                    &self.allocator,
-                )
-            } else {
-                self.arena.resize::<false, false>(
-                    ptr,
-                    old_layout.size(),
-                    new_layout,
-                    &self.allocator,
-                )
-            }
+            self.arena
+                .resize::<false>(ptr, old_layout, new_layout, &self.allocator)
         }
     }
 
@@ -294,39 +280,30 @@ where
         // Safety:
         // Same instance is used for all allocations and resets.
         unsafe {
-            if old_layout.align() >= new_layout.align() {
-                self.arena
-                    .resize::<true, true>(ptr, old_layout.size(), new_layout, &self.allocator)
-            } else {
-                self.arena.resize::<true, false>(
-                    ptr,
-                    old_layout.size(),
-                    new_layout,
-                    &self.allocator,
-                )
-            }
+            self.arena
+                .resize::<true>(ptr, old_layout, new_layout, &self.allocator)
         }
     }
 
-    /// Deallocates memory previously allocated from this allocator.
-    ///
-    /// This call may not actually free memory.
-    /// All memory is guaranteed to be freed on [`reset`](SyncBlinkAlloc::reset) call.
-    ///
-    /// # Safety
-    ///
-    /// `ptr` must be a pointer previously returned by [`allocate`](SyncBlinkAlloc::allocate).
-    /// `size` must be in range `layout.size()..=slice.len()`
-    /// where `layout` is the layout used in the call to [`allocate`](SyncBlinkAlloc::allocate).
-    /// and `slice` is the slice pointer returned by [`allocate`](SyncBlinkAlloc::allocate).
-    #[inline(always)]
-    pub unsafe fn deallocate(&self, ptr: NonNull<u8>, size: usize) {
-        // Safety:
-        // `ptr` was allocated by this allocator.
-        unsafe {
-            self.arena.dealloc(ptr, size);
-        }
-    }
+    // /// Deallocates memory previously allocated from this allocator.
+    // ///
+    // /// This call may not actually free memory.
+    // /// All memory is guaranteed to be freed on [`reset`](SyncBlinkAlloc::reset) call.
+    // ///
+    // /// # Safety
+    // ///
+    // /// `ptr` must be a pointer previously returned by [`allocate`](SyncBlinkAlloc::allocate).
+    // /// `size` must be in range `layout.size()..=slice.len()`
+    // /// where `layout` is the layout used in the call to [`allocate`](SyncBlinkAlloc::allocate).
+    // /// and `slice` is the slice pointer returned by [`allocate`](SyncBlinkAlloc::allocate).
+    // #[inline(always)]
+    // pub unsafe fn deallocate(&self, ptr: NonNull<u8>, size: usize) {
+    //     // Safety:
+    //     // `ptr` was allocated by this allocator.
+    //     unsafe {
+    //         self.arena.dealloc(ptr, size);
+    //     }
+    // }
 
     /// Resets this allocator, deallocating all chunks except the last one.
     /// Last chunk will be reused.
@@ -388,7 +365,8 @@ where
 
     #[inline(always)]
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
-        SyncBlinkAlloc::deallocate(self, ptr, layout.size());
+        // SyncBlinkAlloc::deallocate(self, ptr, layout.size());
+        drop((ptr, layout));
     }
 }
 
@@ -438,7 +416,8 @@ where
 
     #[inline(always)]
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
-        SyncBlinkAlloc::deallocate(self, ptr, layout.size());
+        // SyncBlinkAlloc::deallocate(self, ptr, layout.size());
+        drop((ptr, layout));
     }
 }
 
@@ -521,13 +500,8 @@ where
         // Safety:
         // Same instance is used for all allocations and resets.
         unsafe {
-            if old_layout.align() >= new_layout.align() {
-                self.arena
-                    .resize::<false, true>(ptr, old_layout.size(), new_layout, self.shared)
-            } else {
-                self.arena
-                    .resize::<false, false>(ptr, old_layout.size(), new_layout, self.shared)
-            }
+            self.arena
+                .resize::<false>(ptr, old_layout, new_layout, self.shared)
         }
     }
 
@@ -546,35 +520,30 @@ where
         // Safety:
         // Same instance is used for all allocations and resets.
         unsafe {
-            if old_layout.align() >= new_layout.align() {
-                self.arena
-                    .resize::<true, true>(ptr, old_layout.size(), new_layout, self.shared)
-            } else {
-                self.arena
-                    .resize::<true, false>(ptr, old_layout.size(), new_layout, self.shared)
-            }
+            self.arena
+                .resize::<true>(ptr, old_layout, new_layout, self.shared)
         }
     }
 
-    /// Deallocates memory previously allocated from this allocator.
-    ///
-    /// This call may not actually free memory.
-    /// All memory is guaranteed to be freed on [`reset`](LocalBlinkAlloc::reset) call.
-    ///
-    /// # Safety
-    ///
-    /// `ptr` must be a pointer previously returned by [`allocate`](LocalBlinkAlloc::allocate).
-    /// `size` must be in range `layout.size()..=slice.len()`
-    /// where `layout` is the layout used in the call to [`allocate`](LocalBlinkAlloc::allocate).
-    /// and `slice` is the slice pointer returned by [`allocate`](LocalBlinkAlloc::allocate).
-    #[inline(always)]
-    pub unsafe fn deallocate(&self, ptr: NonNull<u8>, size: usize) {
-        // Safety:
-        // `ptr` was allocated by this allocator.
-        unsafe {
-            self.arena.dealloc(ptr, size);
-        }
-    }
+    // /// Deallocates memory previously allocated from this allocator.
+    // ///
+    // /// This call may not actually free memory.
+    // /// All memory is guaranteed to be freed on [`reset`](LocalBlinkAlloc::reset) call.
+    // ///
+    // /// # Safety
+    // ///
+    // /// `ptr` must be a pointer previously returned by [`allocate`](LocalBlinkAlloc::allocate).
+    // /// `size` must be in range `layout.size()..=slice.len()`
+    // /// where `layout` is the layout used in the call to [`allocate`](LocalBlinkAlloc::allocate).
+    // /// and `slice` is the slice pointer returned by [`allocate`](LocalBlinkAlloc::allocate).
+    // #[inline(always)]
+    // pub unsafe fn deallocate(&self, ptr: NonNull<u8>, size: usize) {
+    //     // Safety:
+    //     // `ptr` was allocated by this allocator.
+    //     unsafe {
+    //         self.arena.dealloc(ptr, size);
+    //     }
+    // }
 
     /// Resets this allocator, deallocating all chunks except the last one.
     /// Last chunk will be reused.
@@ -632,7 +601,8 @@ where
 
     #[inline(always)]
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
-        LocalBlinkAlloc::deallocate(&self, ptr, layout.size())
+        // LocalBlinkAlloc::deallocate(&self, ptr, layout.size())
+        drop((ptr, layout));
     }
 }
 
@@ -682,7 +652,8 @@ where
 
     #[inline(always)]
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
-        LocalBlinkAlloc::deallocate(&self, ptr, layout.size())
+        // LocalBlinkAlloc::deallocate(&self, ptr, layout.size())
+        drop((ptr, layout));
     }
 }
 
