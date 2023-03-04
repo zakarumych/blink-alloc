@@ -517,17 +517,17 @@ where
 }
 
 pub fn criterion_benchmark(c: &mut Criterion) {
-    // bench_alloc::<BlinkAlloc>("blink_alloc::BlinkAlloc", c);
-    // bench_alloc::<SyncBlinkAlloc>("blink_alloc::SyncBlinkAlloc", c);
-    // bench_alloc::<bumpalo::Bump>("bumpalo::Bump", c);
+    bench_alloc::<BlinkAlloc>("blink_alloc::BlinkAlloc", c);
+    bench_alloc::<SyncBlinkAlloc>("blink_alloc::SyncBlinkAlloc", c);
+    bench_alloc::<bumpalo::Bump>("bumpalo::Bump", c);
 
-    // bench_warm_up::<BlinkAlloc>("blink_alloc::BlinkAlloc", c);
-    // bench_warm_up::<SyncBlinkAlloc>("blink_alloc::SyncBlinkAlloc", c);
-    // bench_warm_up::<bumpalo::Bump>("bumpalo::Bump", c);
+    bench_warm_up::<BlinkAlloc>("blink_alloc::BlinkAlloc", c);
+    bench_warm_up::<SyncBlinkAlloc>("blink_alloc::SyncBlinkAlloc", c);
+    bench_warm_up::<bumpalo::Bump>("bumpalo::Bump", c);
 
-    // bench_vec::<BlinkAlloc>("blink_alloc::BlinkAlloc", c);
-    // bench_vec::<SyncBlinkAlloc>("blink_alloc::SyncBlinkAlloc", c);
-    // bench_vec::<bumpalo::Bump>("bumpalo::Bump", c);
+    bench_vec::<BlinkAlloc>("blink_alloc::BlinkAlloc", c);
+    bench_vec::<SyncBlinkAlloc>("blink_alloc::SyncBlinkAlloc", c);
+    bench_vec::<bumpalo::Bump>("bumpalo::Bump", c);
 
     bench_from_iter::<Blink<BlinkAlloc>>("blink_alloc::BlinkAlloc", c);
     bench_from_iter::<Blink<SyncBlinkAlloc>>("blink_alloc::SyncBlinkAlloc", c);
