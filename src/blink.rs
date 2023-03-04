@@ -389,26 +389,26 @@ where
             #[inline(always)]
             fn flush(&mut self) -> &'a mut [T] {
                 match self.ptr.take() {
-                    Some(mut ptr) if self.count != 0 => {
-                        if self.count < self.cap {
-                            // shrink the allocation to the actual size.
-                            // `BlinkAllocator` guarantees that this will not fail
-                            // be a no-op.
+                    Some(ptr) if self.count != 0 => {
+                        // if self.count < self.cap {
+                        //     // shrink the allocation to the actual size.
+                        //     // `BlinkAllocator` guarantees that this will not fail
+                        //     // be a no-op.
 
-                            let item_layout = Layout::new::<DropItem<[T; 0]>>();
+                        //     let item_layout = Layout::new::<DropItem<[T; 0]>>();
 
-                            let (new_layout, _) = Layout::array::<T>(self.count)
-                                .and_then(|array| item_layout.extend(array))
-                                .expect("Smaller than actual allocation");
+                        //     let (new_layout, _) = Layout::array::<T>(self.count)
+                        //         .and_then(|array| item_layout.extend(array))
+                        //         .expect("Smaller than actual allocation");
 
-                            // Safety:
-                            // Shrinking the allocation to the actual used size.
-                            let new_ptr =
-                                unsafe { self.alloc.shrink(ptr.cast(), self.layout, new_layout) }
-                                    .expect("BlinkAllocator guarantees this will succeed");
+                        //     // Safety:
+                        //     // Shrinking the allocation to the actual used size.
+                        //     let new_ptr =
+                        //         unsafe { self.alloc.shrink(ptr.cast(), self.layout, new_layout) }
+                        //             .expect("BlinkAllocator guarantees this will succeed");
 
-                            ptr = new_ptr.cast();
-                        }
+                        //     ptr = new_ptr.cast();
+                        // }
 
                         // Safety: `item` was properly initialized.
                         let (item, slice) = unsafe { DropItem::init_slice(ptr, self.count) };
@@ -574,23 +574,23 @@ where
             #[inline(always)]
             fn flush(&mut self) -> &'a mut [T] {
                 match self.ptr.take() {
-                    Some(mut ptr) if self.count != 0 => {
-                        if self.count < self.cap {
-                            // shrink the allocation to the actual size.
-                            // `BlinkAllocator` guarantees that this will not fail
-                            // be a no-op.
+                    Some(ptr) if self.count != 0 => {
+                        // if self.count < self.cap {
+                        //     // shrink the allocation to the actual size.
+                        //     // `BlinkAllocator` guarantees that this will not fail
+                        //     // be a no-op.
 
-                            let new_layout = Layout::array::<T>(self.count)
-                                .expect("Smaller than actual allocation");
+                        //     let new_layout = Layout::array::<T>(self.count)
+                        //         .expect("Smaller than actual allocation");
 
-                            // Safety:
-                            // Shrinking the allocation to the actual used size.
-                            let new_ptr =
-                                unsafe { self.alloc.shrink(ptr.cast(), self.layout, new_layout) }
-                                    .expect("BlinkAllocator guarantees this will succeed");
+                        //     // Safety:
+                        //     // Shrinking the allocation to the actual used size.
+                        //     let new_ptr =
+                        //         unsafe { self.alloc.shrink(ptr.cast(), self.layout, new_layout) }
+                        //             .expect("BlinkAllocator guarantees this will succeed");
 
-                            ptr = new_ptr.cast();
-                        }
+                        //     ptr = new_ptr.cast();
+                        // }
 
                         // Safety: reallocated for slice of size `self.count`
                         unsafe { &mut *core::slice::from_raw_parts_mut(ptr.as_ptr(), self.count) }
