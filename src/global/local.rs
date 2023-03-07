@@ -199,7 +199,7 @@ where
         {
             assert_eq!(self.allocations.get(), 0, "Not everything was deallocated");
         }
-        (&*self.inner.get()).reset_unchecked();
+        (*self.inner.get()).reset_unchecked();
     }
 
     /// Refreshes scope of this allocator.
@@ -261,7 +261,7 @@ where
 {
     #[inline]
     unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
-        match (&*self.inner.get()).allocate(layout) {
+        match (*self.inner.get()).allocate(layout) {
             Ok(ptr) => {
                 #[cfg(debug_assertions)]
                 {
@@ -276,7 +276,7 @@ where
     #[inline]
     unsafe fn dealloc(&self, ptr: *mut u8, layout: core::alloc::Layout) {
         let ptr = NonNull::new_unchecked(ptr);
-        (&*self.inner.get()).deallocate(ptr, layout.size());
+        (*self.inner.get()).deallocate(ptr, layout.size());
         #[cfg(debug_assertions)]
         {
             self.allocations
@@ -286,7 +286,7 @@ where
 
     #[inline]
     unsafe fn alloc_zeroed(&self, layout: core::alloc::Layout) -> *mut u8 {
-        match (&*self.inner.get()).allocate_zeroed(layout) {
+        match (*self.inner.get()).allocate_zeroed(layout) {
             Ok(ptr) => {
                 #[cfg(debug_assertions)]
                 {
@@ -310,8 +310,8 @@ where
         };
 
         let result = match NonNull::new(ptr) {
-            None => (&*self.inner.get()).allocate(new_layout),
-            Some(ptr) => (&*self.inner.get()).resize(ptr, layout, new_layout),
+            None => (*self.inner.get()).allocate(new_layout),
+            Some(ptr) => (*self.inner.get()).resize(ptr, layout, new_layout),
         };
 
         match result {

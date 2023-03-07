@@ -329,7 +329,7 @@ where
         old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
-        BlinkAlloc::resize(&self, ptr, old_layout, new_layout)
+        BlinkAlloc::resize(self, ptr, old_layout, new_layout)
     }
 
     #[inline(always)]
@@ -349,12 +349,12 @@ where
         old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
-        BlinkAlloc::resize_zeroed(&self, ptr, old_layout, new_layout)
+        BlinkAlloc::resize_zeroed(self, ptr, old_layout, new_layout)
     }
 
     #[inline(always)]
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
-        BlinkAlloc::deallocate(&self, ptr, layout.size());
+        BlinkAlloc::deallocate(self, ptr, layout.size());
     }
 }
 
@@ -379,7 +379,7 @@ where
         old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
-        BlinkAlloc::resize(&self, ptr, old_layout, new_layout)
+        BlinkAlloc::resize(self, ptr, old_layout, new_layout)
     }
 
     #[inline(always)]
@@ -399,12 +399,12 @@ where
         old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
-        BlinkAlloc::resize_zeroed(&self, ptr, old_layout, new_layout)
+        BlinkAlloc::resize_zeroed(self, ptr, old_layout, new_layout)
     }
 
     #[inline(always)]
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
-        BlinkAlloc::deallocate(&self, ptr, layout.size());
+        BlinkAlloc::deallocate(self, ptr, layout.size());
     }
 }
 
