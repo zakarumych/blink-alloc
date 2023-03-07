@@ -51,6 +51,37 @@ impl UnsafeGlobalBlinkAlloc<std::alloc::System> {
             inner: BlinkAlloc::new_in(std::alloc::System),
         }
     }
+
+    /// Create a new [`UnsafeGlobalBlinkAlloc`].
+    /// With this method you can specify initial chunk size.
+    ///
+    /// Const function can be used to initialize a static variable.
+    ///
+    /// # Safety
+    ///
+    /// This method is unsafe because this type is not thread-safe
+    /// but implements `Sync`.
+    /// Allocator returned by this method must not be used concurrently.
+    ///
+    /// For safer alternative see [`GlobalBlinkAlloc`](https://docs.rs/blink-alloc/0.2.2/blink_alloc/struct.GlobalBlinkAlloc.html).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use blink_alloc::UnsafeGlobalBlinkAlloc;
+    ///
+    /// // Safety: This program is single-threaded.
+    /// #[global_allocator]
+    /// static GLOBAL_ALLOC: UnsafeGlobalBlinkAlloc = unsafe { UnsafeGlobalBlinkAlloc::with_chunk_size(1024) };
+    ///
+    /// let _ = Box::new(42);
+    /// let _ = vec![1, 2, 3];
+    /// ```
+    pub const unsafe fn with_chunk_size(chunk_size: usize) -> Self {
+        Self {
+            inner: BlinkAlloc::with_chunk_size_in(chunk_size, std::alloc::System),
+        }
+    }
 }
 
 impl<A> UnsafeGlobalBlinkAlloc<A>
@@ -85,9 +116,44 @@ where
     /// # }
     /// # #[cfg(not(feature = "std"))] fn main() {}
     /// ```
-    pub const unsafe fn new_in(alloc: A) -> Self {
+    pub const unsafe fn new_in(allocator: A) -> Self {
         Self {
-            inner: BlinkAlloc::new_in(alloc),
+            inner: BlinkAlloc::new_in(allocator),
+        }
+    }
+
+    /// Create a new [`UnsafeGlobalBlinkAlloc`]
+    /// with specified underlying allocator.
+    /// With this method you can specify initial chunk size.
+    ///
+    /// Const function can be used to initialize a static variable.
+    ///
+    /// # Safety
+    ///
+    /// This method is unsafe because this type is not thread-safe
+    /// but implements `Sync`.
+    /// Allocator returned by this method must not be used concurrently.
+    ///
+    /// For safer alternative see [`GlobalBlinkAlloc`](https://docs.rs/blink-alloc/0.2.2/blink_alloc/struct.GlobalBlinkAlloc.html).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # #[cfg(feature = "std")] fn main() {
+    /// use blink_alloc::UnsafeGlobalBlinkAlloc;
+    ///
+    /// // Safety: This program is single-threaded.
+    /// #[global_allocator]
+    /// static GLOBAL_ALLOC: UnsafeGlobalBlinkAlloc<std::alloc::System> = unsafe { UnsafeGlobalBlinkAlloc::with_chunk_size_in(1024, std::alloc::System) };
+    ///
+    /// let _ = Box::new(42);
+    /// let _ = vec![1, 2, 3];
+    /// # }
+    /// # #[cfg(not(feature = "std"))] fn main() {}
+    /// ```
+    pub const unsafe fn with_chunk_size_in(chunk_size: usize, allocator: A) -> Self {
+        Self {
+            inner: BlinkAlloc::with_chunk_size_in(chunk_size, allocator),
         }
     }
 

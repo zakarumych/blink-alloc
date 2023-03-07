@@ -52,6 +52,30 @@ impl GlobalBlinkAlloc<std::alloc::System> {
             inner: SyncBlinkAlloc::new_in(std::alloc::System),
         }
     }
+
+    /// Create a new [`GlobalBlinkAlloc`].
+    /// With this method you can specify initial chunk size.
+    ///
+    /// Const function can be used to initialize a static variable.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use blink_alloc::GlobalBlinkAlloc;
+    ///
+    /// #[global_allocator]
+    /// static GLOBAL_ALLOC: GlobalBlinkAlloc = GlobalBlinkAlloc::with_chunk_size(1024);
+    ///
+    /// fn main() {
+    ///     let _ = Box::new(42);
+    ///     let _ = vec![1, 2, 3];
+    /// }
+    /// ```
+    pub const fn with_chunk_size(chunk_size: usize) -> Self {
+        Self {
+            inner: SyncBlinkAlloc::with_chunk_size_in(chunk_size, std::alloc::System),
+        }
+    }
 }
 
 impl<A> GlobalBlinkAlloc<A>
@@ -76,9 +100,34 @@ where
     ///     let _ = vec![1, 2, 3];
     /// }
     /// ```
-    pub const fn new_in(alloc: A) -> Self {
+    pub const fn new_in(allocator: A) -> Self {
         Self {
-            inner: SyncBlinkAlloc::new_in(alloc),
+            inner: SyncBlinkAlloc::new_in(allocator),
+        }
+    }
+
+    /// Create a new [`GlobalBlinkAlloc`]
+    /// with specified underlying allocator.
+    /// With this method you can specify initial chunk size.
+    ///
+    /// Const function can be used to initialize a static variable.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use blink_alloc::GlobalBlinkAlloc;
+    ///
+    /// #[global_allocator]
+    /// static GLOBAL_ALLOC: GlobalBlinkAlloc<std::alloc::System> = GlobalBlinkAlloc::with_chunk_size_in(1024, std::alloc::System);
+    ///
+    /// fn main() {
+    ///     let _ = Box::new(42);
+    ///     let _ = vec![1, 2, 3];
+    /// }
+    /// ```
+    pub const fn with_chunk_size_in(chunk_size: usize, allocator: A) -> Self {
+        Self {
+            inner: SyncBlinkAlloc::with_chunk_size_in(chunk_size, allocator),
         }
     }
 
@@ -139,14 +188,19 @@ where
     /// static BLINK: GlobalBlinkAlloc = GlobalBlinkAlloc::new();
     /// for _ in 0..3 {
     ///     for i in 0..16 {
-    ///         std::thread::scope(|_| {
-    ///             let blink = BLINK.local();
+    ///         let mut blink = BLINK.local(); // Sendable and 'static.
+    ///         std::thread::scope(move |_| {
     ///             let mut vec = Vec::new_in(&blink);
     ///             vec.push(i);
     ///             for j in i*2..i*30 {
     ///                 vec.push(j); // Proxy will allocate enough memory to grow vec without reallocating on 2nd iteration and later.
     ///             }
+    ///             drop(vec); // Without this line it will fail to borrow mutable on next line.
+    ///             blink.reset();
     ///         });
+    ///
+    ///         // Safety: Proxies and allocations are dropped.
+    ///         unsafe { BLINK.reset() };
     ///     }
     /// }
     /// # }
