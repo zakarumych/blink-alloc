@@ -106,13 +106,13 @@ unsafe fn in_place<'a, T, I>(ptr: *mut T, init: I, f: impl FnOnce(I) -> T) -> &'
 #[cold]
 fn cold() {}
 
-#[cfg(debug_assertions)]
-#[track_caller]
-unsafe fn unreachable_unchecked() -> ! {
-    unreachable!()
-}
+// #[cfg(debug_assertions)]
+// #[track_caller]
+// unsafe fn unreachable_unchecked() -> ! {
+//     unreachable!()
+// }
 
-#[cfg(not(debug_assertions))]
-unsafe fn unreachable_unchecked() -> ! {
-    unsafe { core::hint::unreachable_unchecked() }
-}
+// #[cfg(not(debug_assertions))]
+// unsafe fn unreachable_unchecked() -> ! {
+//     unsafe { core::hint::unreachable_unchecked() }
+// }
