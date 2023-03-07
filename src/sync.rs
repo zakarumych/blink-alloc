@@ -2,6 +2,7 @@
 
 use core::{
     alloc::Layout,
+    mem::ManuallyDrop,
     ptr::NonNull,
     sync::atomic::{AtomicUsize, Ordering},
 };
@@ -316,6 +317,16 @@ where
         }
     }
 
+    /// Resets this allocator, deallocating all chunks.
+    #[inline(always)]
+    pub fn reset_final(&mut self) {
+        // Safety:
+        // Same instance is used for all allocations and resets.
+        unsafe {
+            self.arena.reset(false, &self.allocator);
+        }
+    }
+
     /// Resets this allocator, deallocating all chunks except the last one.
     /// Last chunk will be reused.
     /// With steady memory usage after few iterations
@@ -335,6 +346,18 @@ where
         unsafe {
             self.arena.reset_unchecked(true, &self.allocator);
         }
+    }
+
+    /// Unwrap this allocator, returning the underlying allocator.
+    /// Leaks allocated chunks.
+    ///
+    /// To deallocate all chunks call [`reset_final`](BlinkAlloc::reset_final) first.
+    ///
+    /// The second returned value will use global allocator, so
+    /// use with care if this method is used inside global allocator.
+    pub fn into_inner(self) -> A {
+        let me = ManuallyDrop::new(self);
+        unsafe { core::ptr::read(&me.allocator) }
     }
 
     /// Update maximum local allocation size.

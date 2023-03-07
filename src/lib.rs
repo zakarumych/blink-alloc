@@ -17,20 +17,20 @@ macro_rules! feature_switch {
 
 #[allow(unused)]
 macro_rules! with_default {
-    ($(#[$meta:meta])* $v:vis struct $name:ident<$($lt:lifetime,)* $($generic:ident $(: $bound:path $(: $bounds:path )*)? $(= +$default:ty)? $(= $default_type:ty)?),+> { $($fvis:vis $fname:ident: $ftype:ty),* $(,)? }) => {
+    ($(#[$meta:meta])* $v:vis struct $name:ident<$($lt:lifetime,)* $($generic:ident $(: $bound:path $(: $bounds:path )*)? $(= +$default:ty)? $(= $default_type:ty)?),+> { $($(#[$fmeta:meta])*  $fvis:vis $fname:ident: $ftype:ty),* $(,)? }) => {
         $(#[$meta])*
         $v struct $name<$($lt,)* $($generic $(: $bound $(+ $bounds)*)? $(= $default)? $(= $default_type)?)+> {
-            $($fvis $fname: $ftype,)*
+            $($(#[$fmeta])* $fvis $fname: $ftype,)*
         }
     };
 }
 
 #[allow(unused)]
 macro_rules! without_default {
-    ($(#[$meta:meta])* $v:vis struct $name:ident<$($lt:lifetime,)* $($generic:ident $(: $bound:path $(: $bounds:path )*)? $(= +$default:ty)? $(= $default_type:ty)?),+> { $($fvis:vis $fname:ident: $ftype:ty),* $(,)? }) => {
+    ($(#[$meta:meta])* $v:vis struct $name:ident<$($lt:lifetime,)* $($generic:ident $(: $bound:path $(: $bounds:path )*)? $(= +$default:ty)? $(= $default_type:ty)?),+> { $($(#[$fmeta:meta])* $fvis:vis $fname:ident: $ftype:ty),* $(,)? }) => {
         $(#[$meta])*
         $v struct $name<$($lt,)* $($generic $(: $bound $(+ $bounds)*)? $(= $default_type)?)+> {
-            $($fvis $fname: $ftype,)*
+            $($(#[$fmeta])* $fvis $fname: $ftype,)*
         }
     };
 }

@@ -4,6 +4,10 @@ use blink_alloc::GlobalBlinkAlloc;
 static GLOBAL_ALLOC: GlobalBlinkAlloc = GlobalBlinkAlloc::new();
 
 fn main() {
+    unsafe {
+        GLOBAL_ALLOC.scope();
+    }
+
     let _ = Box::new(42);
     let _ = vec![1, 2, 3];
 
