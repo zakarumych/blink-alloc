@@ -1,8 +1,11 @@
 use core::{
     alloc::{GlobalAlloc, Layout},
-    cell::{Cell, UnsafeCell},
+    cell::UnsafeCell,
     ptr::{null_mut, NonNull},
 };
+
+#[cfg(debug_assertions)]
+use core::cell::Cell;
 
 use allocator_api2::alloc::{AllocError, Allocator};
 

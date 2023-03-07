@@ -2,8 +2,10 @@ use core::{
     alloc::{GlobalAlloc, Layout},
     cell::UnsafeCell,
     ptr::{null_mut, NonNull},
-    sync::atomic::{AtomicU64, Ordering},
 };
+
+#[cfg(debug_assertions)]
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use allocator_api2::alloc::{AllocError, Allocator};
 
