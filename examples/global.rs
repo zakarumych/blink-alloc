@@ -5,7 +5,7 @@ static GLOBAL_ALLOC: GlobalBlinkAlloc = GlobalBlinkAlloc::new();
 
 fn main() {
     unsafe {
-        GLOBAL_ALLOC.scope();
+        GLOBAL_ALLOC.init();
     }
 
     let _ = Box::new(42);

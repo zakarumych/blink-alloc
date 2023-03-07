@@ -1107,17 +1107,6 @@ use crate::cold;
 #[cfg(feature = "sync")]
 pub use self::sync::ArenaSync;
 
-// #[cfg(debug_assertions)]
-// #[track_caller]
-// unsafe fn unreachable_unchecked() -> ! {
-//     unreachable!()
-// }
-
-// #[cfg(not(debug_assertions))]
-// unsafe fn unreachable_unchecked() -> ! {
-//     unsafe { core::hint::unreachable_unchecked() }
-// }
-
 // #[inline(always)]
 // unsafe fn memmove(src: *mut u8, dst: *mut u8, size: usize) {
 //     if src == dst {

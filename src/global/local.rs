@@ -4,14 +4,74 @@ use core::{
     ptr::{null_mut, NonNull},
 };
 
-use allocator_api2::alloc::Allocator;
+use allocator_api2::alloc::{AllocError, Allocator};
 
-use crate::local::BlinkAlloc;
+use crate::{cold, local::BlinkAlloc, unreachable_unchecked};
+
+enum State<A: Allocator> {
+    Initialized(BlinkAlloc<A>),
+    Uninitialized(A),
+}
+
+impl<A: Allocator> State<A> {
+    #[inline(always)]
+    fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        match self {
+            State::Initialized(blink_alloc) => blink_alloc.allocate(layout),
+            State::Uninitialized(allocator) => {
+                cold();
+                allocator.allocate(layout)
+            }
+        }
+    }
+
+    #[inline(always)]
+    fn allocate_zeroed(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        match self {
+            State::Initialized(blink_alloc) => blink_alloc.allocate_zeroed(layout),
+            State::Uninitialized(allocator) => {
+                cold();
+                allocator.allocate_zeroed(layout)
+            }
+        }
+    }
+
+    #[inline(always)]
+    unsafe fn resize(
+        &self,
+        ptr: NonNull<u8>,
+        old_layout: Layout,
+        new_layout: Layout,
+    ) -> Result<NonNull<[u8]>, AllocError> {
+        match self {
+            State::Initialized(blink_alloc) => blink_alloc.resize(ptr, old_layout, new_layout),
+            State::Uninitialized(allocator) => {
+                cold();
+                if old_layout.size() >= new_layout.size() {
+                    allocator.grow(ptr, old_layout, new_layout)
+                } else {
+                    allocator.shrink(ptr, old_layout, new_layout)
+                }
+            }
+        }
+    }
+
+    #[inline(always)]
+    unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
+        match self {
+            State::Initialized(blink_alloc) => blink_alloc.deallocate(ptr, layout.size()),
+            State::Uninitialized(allocator) => {
+                cold();
+                allocator.deallocate(ptr, layout)
+            }
+        }
+    }
+}
 
 switch_std_default! {
     /// [`GlobalAlloc`] implementation based on [`BlinkAlloc`].
     pub struct UnsafeGlobalBlinkAlloc<A: Allocator = +std::alloc::System> {
-        inner: UnsafeCell<BlinkAlloc<A>>,
+        inner: UnsafeCell<State<A>>,
         #[cfg(debug_assertions)]
         allocations: Cell<u64>,
     }
@@ -53,35 +113,6 @@ impl UnsafeGlobalBlinkAlloc<std::alloc::System> {
     pub const unsafe fn new() -> Self {
         UnsafeGlobalBlinkAlloc::new_in(std::alloc::System)
     }
-
-    /// Create a new [`UnsafeGlobalBlinkAlloc`].
-    /// With this method you can specify initial chunk size.
-    ///
-    /// Const function can be used to initialize a static variable.
-    ///
-    /// # Safety
-    ///
-    /// This method is unsafe because this type is not thread-safe
-    /// but implements `Sync`.
-    /// Allocator returned by this method must not be used concurrently.
-    ///
-    /// For safer alternative see [`GlobalBlinkAlloc`](https://docs.rs/blink-alloc/0.2.2/blink_alloc/struct.GlobalBlinkAlloc.html).
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use blink_alloc::UnsafeGlobalBlinkAlloc;
-    ///
-    /// // Safety: This program is single-threaded.
-    /// #[global_allocator]
-    /// static GLOBAL_ALLOC: UnsafeGlobalBlinkAlloc = unsafe { UnsafeGlobalBlinkAlloc::with_chunk_size(1024) };
-    ///
-    /// let _ = Box::new(42);
-    /// let _ = vec![1, 2, 3];
-    /// ```
-    pub const unsafe fn with_chunk_size(chunk_size: usize) -> Self {
-        UnsafeGlobalBlinkAlloc::with_chunk_size_in(chunk_size, std::alloc::System)
-    }
 }
 
 impl<A> UnsafeGlobalBlinkAlloc<A>
@@ -118,44 +149,7 @@ where
     /// ```
     pub const unsafe fn new_in(allocator: A) -> Self {
         UnsafeGlobalBlinkAlloc {
-            inner: UnsafeCell::new(BlinkAlloc::new_in(allocator)),
-            #[cfg(debug_assertions)]
-            allocations: Cell::new(0),
-        }
-    }
-
-    /// Create a new [`UnsafeGlobalBlinkAlloc`]
-    /// with specified underlying allocator.
-    /// With this method you can specify initial chunk size.
-    ///
-    /// Const function can be used to initialize a static variable.
-    ///
-    /// # Safety
-    ///
-    /// This method is unsafe because this type is not thread-safe
-    /// but implements `Sync`.
-    /// Allocator returned by this method must not be used concurrently.
-    ///
-    /// For safer alternative see [`GlobalBlinkAlloc`](https://docs.rs/blink-alloc/0.2.2/blink_alloc/struct.GlobalBlinkAlloc.html).
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # #[cfg(feature = "std")] fn main() {
-    /// use blink_alloc::UnsafeGlobalBlinkAlloc;
-    ///
-    /// // Safety: This program is single-threaded.
-    /// #[global_allocator]
-    /// static GLOBAL_ALLOC: UnsafeGlobalBlinkAlloc<std::alloc::System> = unsafe { UnsafeGlobalBlinkAlloc::with_chunk_size_in(1024, std::alloc::System) };
-    ///
-    /// let _ = Box::new(42);
-    /// let _ = vec![1, 2, 3];
-    /// # }
-    /// # #[cfg(not(feature = "std"))] fn main() {}
-    /// ```
-    pub const unsafe fn with_chunk_size_in(chunk_size: usize, allocator: A) -> Self {
-        UnsafeGlobalBlinkAlloc {
-            inner: UnsafeCell::new(BlinkAlloc::with_chunk_size_in(chunk_size, allocator)),
+            inner: UnsafeCell::new(State::Uninitialized(allocator)),
             #[cfg(debug_assertions)]
             allocations: Cell::new(0),
         }
@@ -181,14 +175,14 @@ where
     /// #[global_allocator]
     /// static GLOBAL_ALLOC: UnsafeGlobalBlinkAlloc = unsafe { UnsafeGlobalBlinkAlloc::new() };
     ///
-    /// unsafe { GLOBAL_ALLOC.scope() };
+    /// unsafe { GLOBAL_ALLOC.init() };
     ///
     /// let b = Box::new(42);
     /// let v = vec![1, 2, 3];
     /// drop(b);
     /// drop(v);
     ///
-    /// // Safety: memory allocated after `scope` call won't be used after reset.
+    /// // Safety: memory allocated after `init` call won't be used after reset.
     /// unsafe { GLOBAL_ALLOC.reset() };
     /// # }
     /// # #[cfg(not(feature = "std"))] fn main() {}
@@ -199,26 +193,26 @@ where
         {
             assert_eq!(self.allocations.get(), 0, "Not everything was deallocated");
         }
-        (*self.inner.get()).reset_unchecked();
+        match *self.inner.get() {
+            State::Initialized(ref mut allocator) => allocator.reset(),
+            State::Uninitialized(_) => cold(),
+        }
     }
 
-    /// Refreshes scope of this allocator.
-    ///
-    /// Forgets previous allocations so that deallocating them will have no effect.
-    /// Additionally resets will not invalidate allocations made before this call.
-    ///
-    /// When used as `#[global_allocator]` this method should be called
-    /// at least once after `main` starts if `reset` is going to be ever called.
+    /// Initializes this allocator.
+    /// Before this call any allocation will go directly to the underlying allocator.
     ///
     /// # Safety
     ///
-    /// This method is not thread-local.
-    /// Caller must externally synchronize this method call with other threads
-    /// accessing this allocator.
+    /// Must be called exactly once.
+    /// Must be externally synchronized with other threads accessing this allocator.
     #[inline(always)]
-    pub unsafe fn scope(&self) {
-        let allocator = core::ptr::read(self.inner.get()).into_inner();
-        core::ptr::write(self.inner.get(), BlinkAlloc::new_in(allocator));
+    pub unsafe fn init(&self) {
+        let alloc = match core::ptr::read(self.inner.get()) {
+            State::Uninitialized(allocator) => BlinkAlloc::new_in(allocator),
+            State::Initialized(_) => unreachable_unchecked(),
+        };
+        core::ptr::write(self.inner.get(), State::Initialized(alloc));
 
         #[cfg(debug_assertions)]
         {
@@ -226,27 +220,23 @@ where
         }
     }
 
-    /// Refreshes scope of this allocator.
+    /// Initializes this allocator.
     /// With this method you can specify initial chunk size.
-    ///
-    /// Forgets previous allocations so that deallocating them will have no effect.
-    /// Additionally resets will not invalidate allocations made before this call.
-    ///
-    /// When used as `#[global_allocator]` this method should be called
-    /// at least once after `main` starts if `reset` is going to be ever called.
+    /// Before this call any allocation will go directly to the underlying allocator.
     ///
     /// # Safety
     ///
-    /// This method is not thread-local.
-    /// Caller must externally synchronize this method call with other threads
-    /// accessing this allocator.
+    /// Must be called exactly once.
+    /// Must be externally synchronized with other threads accessing this allocator.
     #[inline(always)]
-    pub unsafe fn scope_with_chunk_size(&self, chunk_size: usize) {
-        let allocator = core::ptr::read(self.inner.get()).into_inner();
-        core::ptr::write(
-            self.inner.get(),
-            BlinkAlloc::with_chunk_size_in(chunk_size, allocator),
-        );
+    pub unsafe fn init_with_chunk_size(&self, chunk_size: usize) {
+        let alloc = match core::ptr::read(self.inner.get()) {
+            State::Uninitialized(allocator) => {
+                BlinkAlloc::with_chunk_size_in(chunk_size, allocator)
+            }
+            State::Initialized(_) => unreachable_unchecked(),
+        };
+        core::ptr::write(self.inner.get(), State::Initialized(alloc));
 
         #[cfg(debug_assertions)]
         {
@@ -276,7 +266,7 @@ where
     #[inline]
     unsafe fn dealloc(&self, ptr: *mut u8, layout: core::alloc::Layout) {
         let ptr = NonNull::new_unchecked(ptr);
-        (*self.inner.get()).deallocate(ptr, layout.size());
+        (*self.inner.get()).deallocate(ptr, layout);
         #[cfg(debug_assertions)]
         {
             self.allocations
