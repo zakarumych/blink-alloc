@@ -1,6 +1,6 @@
 [package]
 name = "blink-alloc"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2018"
 authors = ["Zakarum <zaq.dev@icloud.com>"]
 license = "MIT OR Apache-2.0"
@@ -14,10 +14,10 @@ keywords = ["allocator", "arena", "concurrent", "drop"]
 [features]
 nightly = ["allocator-api2/nightly", "bumpalo/allocator_api"]
 alloc = ["allocator-api2/alloc"]
-oom_handling = []
-sync = ["parking_lot"]
+std = ["alloc", "allocator-api2/std",]
+sync = ["parking_lot", "std"]
 
-default = ["alloc", "oom_handling"]
+default = ["std"]
 
 [dependencies]
 parking_lot = {  version = "0.12", optional = true }
@@ -32,6 +32,10 @@ bumpalo = "3.7"
 name = "bench"
 harness = false
 required-features = ["alloc", "sync", "nightly"]
+
+[[example]]
+name = "global"
+required-features = ["std", "sync"]
 
 [package.metadata.docs.rs]
 all-features = true

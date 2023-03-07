@@ -13,7 +13,7 @@ use crate::{
     arena::{Arena, ArenaLocal},
 };
 
-with_global_default! {
+switch_alloc_default! {
     /// Single-threaded blink allocator.
     ///
     /// Blink-allocator is arena-based allocator that
@@ -73,9 +73,10 @@ with_global_default! {
     ///
     /// ```
     /// # #![cfg_attr(feature = "nightly", feature(allocator_api))]
+    /// # #[cfg(feature = "alloc")]
+    /// # fn main() {
     /// # use blink_alloc::BlinkAlloc;
     /// # use allocator_api2::vec::Vec;
-    /// # fn main() {
     /// let mut blink = BlinkAlloc::new();
     /// let mut vec = Vec::new_in(&blink);
     /// vec.push(1);
@@ -84,6 +85,7 @@ with_global_default! {
     /// drop(vec);
     /// blink.reset();
     /// # }
+    /// # #[cfg(not(feature = "alloc"))] fn main() {}
     /// ```
     pub struct BlinkAlloc<A: Allocator = +Global> {
         arena: ArenaLocal,
@@ -232,36 +234,57 @@ where
         }
     }
 
-    // /// Deallocates memory previously allocated from this allocator.
-    // ///
-    // /// This call may not actually free memory.
-    // /// All memory is guaranteed to be freed on [`reset`](BlinkAlloc::reset) call.
-    // ///
-    // /// # Safety
-    // ///
-    // /// `ptr` must be a pointer previously returned by [`allocate`](BlinkAlloc::allocate).
-    // /// `size` must be in range `layout.size()..=slice.len()`
-    // /// where `layout` is the layout used in the call to [`allocate`](BlinkAlloc::allocate).
-    // /// and `slice` is the slice pointer returned by [`allocate`](BlinkAlloc::allocate).
-    // #[inline(always)]
-    // pub unsafe fn deallocate(&self, ptr: NonNull<u8>, size: usize) {
-    //     // Safety:
-    //     // `ptr` was allocated by this allocator.
-    //     unsafe {
-    //         self.arena.dealloc(ptr, size);
-    //     }
-    // }
+    /// Deallocates memory previously allocated from this allocator.
+    ///
+    /// This call may not actually free memory.
+    /// All memory is guaranteed to be freed on [`reset`](BlinkAlloc::reset) call.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must be a pointer previously returned by [`allocate`](BlinkAlloc::allocate).
+    /// `size` must be in range `layout.size()..=slice.len()`
+    /// where `layout` is the layout used in the call to [`allocate`](BlinkAlloc::allocate).
+    /// and `slice` is the slice pointer returned by [`allocate`](BlinkAlloc::allocate).
+    #[inline(always)]
+    pub unsafe fn deallocate(&self, ptr: NonNull<u8>, size: usize) {
+        // Safety:
+        // `ptr` was allocated by this allocator.
+        unsafe {
+            self.arena.dealloc(ptr, size);
+        }
+    }
 
     /// Resets this allocator, deallocating all chunks except the last one.
     /// Last chunk will be reused.
     /// With steady memory usage after few iterations
-    /// chunk size should be sufficient for all allocations between resets.
+    /// one chunk should be sufficient for all allocations between resets.
     #[inline(always)]
     pub fn reset(&mut self) {
         // Safety:
         // Same instance is used for all allocations and resets.
         unsafe {
             self.arena.reset(true, &self.allocator);
+        }
+    }
+
+    /// Resets this allocator, deallocating all chunks except the last one.
+    /// Last chunk will be reused.
+    /// With steady memory usage after few iterations
+    /// one chunk should be sufficient for all allocations between resets.
+    ///
+    /// # Safety
+    ///
+    /// Blink-allocators guarantee that memory can be used while shared
+    /// borrow to the allocator is held, preventing safe `fn reset` call.
+    ///
+    /// With this method it becomes caller responsibility to ensure
+    /// that allocated memory won't be used after reset.
+    #[inline(always)]
+    pub unsafe fn reset_unchecked(&self) {
+        // Safety:
+        // Same instance is used for all allocations and resets.
+        unsafe {
+            self.arena.reset_unchecked(true, &self.allocator);
         }
     }
 }
@@ -312,8 +335,7 @@ where
 
     #[inline(always)]
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
-        // BlinkAlloc::deallocate(&self, ptr, layout.size());
-        drop((ptr, layout));
+        BlinkAlloc::deallocate(&self, ptr, layout.size());
     }
 }
 
@@ -363,7 +385,7 @@ where
 
     #[inline(always)]
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
-        drop((ptr, layout));
+        BlinkAlloc::deallocate(&self, ptr, layout.size());
     }
 }
 

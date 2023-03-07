@@ -13,9 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        alloc: ["", "alloc,"]
+        std: ["", "alloc,", "std,"]
         sync: ["", "sync,"]
-        oom_handling: ["", "oom_handling,"]
         nightly: ["", "nightly,"]
     steps:
     - uses: actions/checkout@v2
@@ -28,4 +27,4 @@ jobs:
       uses: actions-rs/cargo@v1
       with:
         command: test
-        args: --all --features=${{ matrix.alloc }}${{ matrix.sync }}${{ matrix.oom_handling }}${{ matrix.nightly }}
+        args: --all --features=${{ matrix.std }}${{ matrix.sync }}${{ matrix.nightly }}

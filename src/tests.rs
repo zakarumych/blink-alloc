@@ -92,27 +92,27 @@ fn test_reuse() {
 
     let mut alloc = BlinkAlloc::with_chunk_size_in(0, &allocator);
 
-    for i in 0..123 {
-        dbg!(i);
+    for _ in 0..123 {
         alloc.allocate(Layout::new::<u32>()).unwrap();
     }
     alloc.reset();
 
     allocator.last.set(false);
 
-    for i in 0..123 {
-        dbg!(i);
+    for _ in 0..123 {
         alloc.allocate(Layout::new::<u32>()).unwrap();
     }
 }
 
 #[test]
 fn test_emplace_no_drop() {
+    use alloc::{borrow::ToOwned, string::String};
+
     struct Foo<'a>(&'a String);
 
     impl Drop for Foo<'_> {
         fn drop(&mut self) {
-            println!("{}", self.0);
+            panic!("Dropped");
         }
     }
 

@@ -18,13 +18,13 @@ use crate::{
     in_place,
 };
 
-#[cfg(all(feature = "oom_handling", not(no_global_oom_handling)))]
+#[cfg(not(no_global_oom_handling))]
 use crate::ResultExt;
 
 #[cfg(feature = "alloc")]
 use crate::local::BlinkAlloc;
 
-#[cfg(all(feature = "oom_handling", not(no_global_oom_handling)))]
+#[cfg(not(no_global_oom_handling))]
 use crate::oom::{handle_alloc_error, size_overflow};
 
 type EmplaceType<T, E> = Result<T, ManuallyDrop<E>>;
@@ -53,37 +53,47 @@ impl<'a, T: ?Sized> CoerceFromMut<'a, T> for &'a T {
 /// # Examples
 ///
 /// ```
+/// # #[cfg(feature = "alloc")] fn main() {
 /// # use blink_alloc::{Blink, IteratorExt};
 /// let mut blink = Blink::new();
 /// let slice = (0..10).filter(|x| x % 3 != 0).collect_to_blink(&mut blink);
 /// assert_eq!(slice, [1, 2, 4, 5, 7, 8]);
 /// slice[0] = 10;
 /// assert_eq!(slice, [10, 2, 4, 5, 7, 8]);
+/// # }
+/// # #[cfg(not(feature = "alloc"))] fn main() {}
 /// ```
 ///
 /// For non-static data with drop.
 ///
 /// ```
+/// # #[cfg(feature = "alloc")] fn main() {
 /// # use blink_alloc::{Blink, IteratorExt};
 /// let mut blink = Blink::new();
 /// let slice = (0..10).filter(|x| x % 3 != 0).collect_to_blink_shared(&mut blink);
 /// assert_eq!(slice, [1, 2, 4, 5, 7, 8]);
+/// # }
+/// # #[cfg(not(feature = "alloc"))] fn main() {}
 /// ```
 ///
 /// For non-static data and no drop.
 ///
 /// ```
+/// # #[cfg(feature = "alloc")] fn main() {
 /// # use blink_alloc::{Blink, IteratorExt};
 /// let mut blink = Blink::new();
 /// let slice = (0..10).filter(|x| x % 3 != 0).collect_to_blink_no_drop(&mut blink);
 /// assert_eq!(slice, [1, 2, 4, 5, 7, 8]);
 /// slice[0] = 10;
 /// assert_eq!(slice, [10, 2, 4, 5, 7, 8]);
+/// # }
+/// # #[cfg(not(feature = "alloc"))] fn main() {}
 /// ```
 pub trait IteratorExt: Iterator {
     /// Collect iterator into blink allocator and return slice reference.
+    #[cfg(not(no_global_oom_handling))]
     #[inline(always)]
-    fn collect_to_blink(self, blink: &mut Blink) -> &mut [Self::Item]
+    fn collect_to_blink<A: BlinkAllocator>(self, blink: &mut Blink<A>) -> &mut [Self::Item]
     where
         Self: Sized,
         Self::Item: 'static,
@@ -91,26 +101,67 @@ pub trait IteratorExt: Iterator {
         blink.emplace().from_iter(self)
     }
 
+    /// Collect iterator into blink allocator and return slice reference.
+    #[cfg(not(no_global_oom_handling))]
     #[inline(always)]
-    fn collect_to_blink_shared(self, blink: &mut Blink) -> &[Self::Item]
+    fn collect_to_blink_shared<A: BlinkAllocator>(self, blink: &mut Blink<A>) -> &[Self::Item]
     where
         Self: Sized,
     {
         blink.emplace_shared().from_iter(self)
     }
 
+    /// Collect iterator into blink allocator and return slice reference.
+    #[cfg(not(no_global_oom_handling))]
     #[inline(always)]
-    fn collect_to_blink_no_drop(self, blink: &mut Blink) -> &mut [Self::Item]
+    fn collect_to_blink_no_drop<A: BlinkAllocator>(self, blink: &mut Blink<A>) -> &mut [Self::Item]
     where
         Self: Sized,
     {
         blink.emplace_no_drop().from_iter(self)
     }
+
+    /// Attempts to collect iterator into blink allocator and return slice reference.
+    #[inline(always)]
+    fn try_collect_to_blink<A: BlinkAllocator>(
+        self,
+        blink: &mut Blink<A>,
+    ) -> Result<&mut [Self::Item], (&mut [Self::Item], Option<Self::Item>)>
+    where
+        Self: Sized,
+        Self::Item: 'static,
+    {
+        blink.emplace().try_from_iter(self)
+    }
+
+    /// Attempts to collect iterator into blink allocator and return slice reference.
+    #[inline(always)]
+    fn try_collect_to_blink_shared<A: BlinkAllocator>(
+        self,
+        blink: &mut Blink<A>,
+    ) -> Result<&[Self::Item], (&[Self::Item], Option<Self::Item>)>
+    where
+        Self: Sized,
+    {
+        blink.emplace_shared().try_from_iter(self)
+    }
+
+    /// Attempts to collect iterator into blink allocator and return slice reference.
+    #[inline(always)]
+    fn try_collect_to_blink_no_drop<A: BlinkAllocator>(
+        self,
+        blink: &mut Blink<A>,
+    ) -> Result<&mut [Self::Item], (&mut [Self::Item], Option<Self::Item>)>
+    where
+        Self: Sized,
+    {
+        blink.emplace_no_drop().try_from_iter(self)
+    }
 }
 
 impl<I> IteratorExt for I where I: Iterator {}
 
-with_global_default! {
+switch_alloc_default! {
     /// An allocator adaptor for designed for blink allocator.
     /// Provides user-friendly methods to emplace values into allocated memory.
     /// Supports emplace existing, constructing value in allocated memory directly or indirectly.
@@ -131,8 +182,7 @@ with_global_default! {
     /// `try_` prefixed methods returns `Result` with allocation errors.
     /// And non-prefixed methods calls [`handle_alloc_error`] method
     /// (unless "alloc" feature is not enabled, in this case it panics).
-    /// Non-prefixed methods require "oom_handling" feature (enabled by default)
-    /// and absence of `no_global_oom_handling` cfg.
+    /// Non-prefixed methods require "no_global_oom_handling" feature cfg is disabled.
     ///
     /// [`Blink`] can be reset by calling `reset` method.
     /// It drops all emplaced values and resets associated allocator instance.
@@ -163,13 +213,10 @@ impl Blink<BlinkAlloc<Global>> {
     /// # Examples
     ///
     /// ```
-    /// # #[cfg(not(feature = "oom_handling"))] fn main() {}
-    /// # #[cfg(feature = "oom_handling")] fn main() {
     /// use blink_alloc::Blink;
     /// let mut blink = Blink::new();
     ///
     /// blink.put(42);
-    /// # }
     /// ```
     #[inline(always)]
     pub const fn new() -> Self {
@@ -183,13 +230,10 @@ impl Blink<BlinkAlloc<Global>> {
     /// # Examples
     ///
     /// ```
-    /// # #[cfg(not(feature = "oom_handling"))] fn main() {}
-    /// # #[cfg(feature = "oom_handling")] fn main() {
     /// use blink_alloc::Blink;
     /// let mut blink = Blink::with_chunk_size(16);
     ///
     /// blink.put(42);
-    /// # }
     #[inline(always)]
     pub const fn with_chunk_size(capacity: usize) -> Self {
         Blink::new_in(BlinkAlloc::with_chunk_size(capacity))
@@ -769,7 +813,7 @@ where
     /// Allocates memory for a value and moves `value` into the memory.
     /// Returns reference to the emplaced value.
     /// If allocation fails, diverges.
-    #[cfg(all(feature = "oom_handling", not(no_global_oom_handling)))]
+    #[cfg(not(no_global_oom_handling))]
     #[inline(always)]
     pub fn value(&self, value: T) -> R {
         R::coerce(
@@ -815,7 +859,7 @@ where
     /// On success invokes closure and initialize the value.
     /// Returns reference to the value.
     /// If allocation fails, diverges.
-    #[cfg(all(feature = "oom_handling", not(no_global_oom_handling)))]
+    #[cfg(not(no_global_oom_handling))]
     #[inline(always)]
     pub fn with<F>(&self, f: F) -> R
     where
@@ -866,6 +910,7 @@ where
     /// On success invokes closure and initialize the value.
     /// If closure fails, returns the error.
     /// Returns reference to the value.
+    #[cfg(not(no_global_oom_handling))]
     #[inline(always)]
     pub fn with_fallible<F, E>(&self, f: F) -> Result<R, E>
     where
@@ -924,7 +969,7 @@ where
     /// Values already emplaced will be dropped.
     /// One last value that was taken from iterator and not emplaced
     /// is dropped before this method returns.
-    #[cfg(all(feature = "oom_handling", not(no_global_oom_handling)))]
+    #[cfg(not(no_global_oom_handling))]
     #[inline(always)]
     pub fn from_iter<I>(&self, iter: I) -> S
     where
@@ -960,6 +1005,7 @@ where
     /// # Example
     ///
     /// ```
+    /// # #[cfg(feature = "alloc")] fn main() {
     /// # use blink_alloc::Blink;
     /// let mut blink = Blink::new();
     /// let foo = blink.put(42);
@@ -967,11 +1013,67 @@ where
     /// *foo = 24;
     /// blink.reset();
     /// // assert_eq!(*foo, 24); // Cannot compile. `foo` does not outlive reset.
+    /// # }
+    /// # #[cfg(not(feature = "alloc"))] fn main() {}
     /// ```
-    #[cfg(all(feature = "oom_handling", not(no_global_oom_handling)))]
+    #[cfg(not(no_global_oom_handling))]
     #[inline(always)]
     pub fn put<T: 'static>(&self, value: T) -> &mut T {
-        self.emplace().value(value)
+        unsafe {
+            self._try_emplace(
+                value,
+                |slot, value| {
+                    slot.write(Ok::<_, ManuallyDrop<Infallible>>(value));
+                },
+                false,
+                identity,
+                |_, layout| handle_alloc_error(layout),
+            )
+        }
+        .safe_ok()
+    }
+
+    /// Puts value into this `Blink` instance.
+    /// Returns reference to the value.
+    ///
+    /// The value will not be dropped when `Blink` is reset.
+    ///
+    /// Effectively extends lifetime of the value
+    /// from local scope to the reset scope.
+    ///
+    /// For more flexible value placement see
+    /// [`Blink::emplace`], [`Blink::emplace_no_drop`] and
+    /// [`Blink::emplace_unchecked`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # #[cfg(feature = "alloc")] fn main() {
+    /// # use blink_alloc::Blink;
+    /// let mut blink = Blink::new();
+    /// let foo = blink.put(42);
+    /// assert_eq!(*foo, 42);
+    /// *foo = 24;
+    /// blink.reset();
+    /// // assert_eq!(*foo, 24); // Cannot compile. `foo` does not outlive reset.
+    /// # }
+    /// # #[cfg(not(feature = "alloc"))] fn main() {}
+    /// ```
+    #[cfg(not(no_global_oom_handling))]
+    #[inline(always)]
+    pub fn put_no_drop<T>(&self, value: T) -> &mut T {
+        unsafe {
+            self._try_emplace(
+                value,
+                |slot, value| {
+                    slot.write(Ok::<_, ManuallyDrop<Infallible>>(value));
+                },
+                true,
+                identity,
+                |_, layout| handle_alloc_error(layout),
+            )
+        }
+        .safe_ok()
     }
 
     /// Allocates memory for a value.
@@ -990,7 +1092,7 @@ where
 
     /// Allocates memory for a value.
     /// Returns reference to the uninitialized value.
-    #[cfg(all(feature = "oom_handling", not(no_global_oom_handling)))]
+    #[cfg(not(no_global_oom_handling))]
     #[inline(always)]
     #[allow(clippy::mut_from_ref)]
     pub fn uninit<T>(&self) -> &mut MaybeUninit<T> {
@@ -1008,7 +1110,7 @@ where
 
     /// Copies the slice to the allocated memory
     /// and returns reference to the new slice.
-    #[cfg(all(feature = "oom_handling", not(no_global_oom_handling)))]
+    #[cfg(not(no_global_oom_handling))]
     #[inline(always)]
     #[allow(clippy::mut_from_ref)]
     pub fn copy_slice<T>(&self, slice: &[T]) -> &mut [T]
@@ -1036,7 +1138,7 @@ where
 
     /// Copies the slice to the allocated memory
     /// and returns reference to the new slice.
-    #[cfg(all(feature = "oom_handling", not(no_global_oom_handling)))]
+    #[cfg(not(no_global_oom_handling))]
     #[inline(always)]
     #[allow(clippy::mut_from_ref)]
     pub fn copy_str(&self, string: &str) -> &mut str {
@@ -1077,6 +1179,7 @@ where
     /// # Example
     ///
     /// ```
+    /// # #[cfg(feature = "alloc")] fn main() {
     /// # use blink_alloc::Blink;
     /// let mut blink = Blink::new();
     /// let foo = blink.put(42);
@@ -1084,6 +1187,8 @@ where
     /// *foo = 24;
     /// blink.reset();
     /// // assert_eq!(*foo, 24); // Cannot compile. `foo` does not outlive reset.
+    /// # }
+    /// # #[cfg(not(feature = "alloc"))] fn main() {}
     /// ```
     #[inline(always)]
     pub fn emplace<T: 'static>(&self) -> Emplace<A, T> {
@@ -1112,6 +1217,7 @@ where
     /// # Example
     ///
     /// ```
+    /// # #[cfg(feature = "alloc")] fn main() {
     /// # use blink_alloc::Blink;
     /// struct Foo<'a>(&'a String);
     ///
@@ -1130,6 +1236,8 @@ where
     /// foo.0 = world;
     /// blink.reset();
     /// // assert_eq!(foo.0, "Universe"); // Cannot compile. `foo` does not outlive reset.
+    /// # }
+    /// # #[cfg(not(feature = "alloc"))] fn main() {}
     /// ```
     #[inline(always)]
     pub fn emplace_no_drop<T>(&self) -> Emplace<A, T> {
@@ -1161,6 +1269,7 @@ where
     ///
     ///
     /// ```
+    /// # #[cfg(feature = "alloc")] fn main() {
     /// # use blink_alloc::Blink;
     /// struct Foo<'a>(&'a String);
     ///
@@ -1179,6 +1288,8 @@ where
     /// // foo.0 = world;
     /// blink.reset();
     /// // assert_eq!(foo.0, "Universe"); // Cannot compile. `foo` does not outlive reset.
+    /// # }
+    /// # #[cfg(not(feature = "alloc"))] fn main() {}
     /// ```
     #[inline(always)]
     pub fn emplace_shared<T>(&self) -> Emplace<A, T, &T, &[T]> {
@@ -1215,6 +1326,7 @@ where
     /// is impossible.
     ///
     /// ```no_run
+    /// # #[cfg(feature = "alloc")] fn main() {
     /// # use blink_alloc::Blink;
     /// struct Foo<'a>(&'a String);
     ///
@@ -1234,6 +1346,8 @@ where
     /// foo.0 = world;
     /// blink.reset();
     /// // assert_eq!(foo.0, "Universe"); // Cannot compile. `foo` does not outlive reset.
+    /// # }
+    /// # #[cfg(not(feature = "alloc"))] fn main() {}
     /// ```
     #[inline(always)]
     pub unsafe fn emplace_unchecked<T>(&self) -> Emplace<A, T> {
@@ -1255,6 +1369,7 @@ where
 /// # Example
 ///
 /// ```
+/// # #[cfg(feature = "alloc")] fn main() {
 /// # use blink_alloc::{SendBlink, Blink};
 /// let mut blink = Blink::new();
 /// let rc = std::rc::Rc::new(42);
@@ -1266,6 +1381,8 @@ where
 ///     let mut blink = send_blink.into_inner();
 ///     blink.put(42);
 /// });
+/// # }
+/// # #[cfg(not(feature = "alloc"))] fn main() {}
 /// ````
 pub struct SendBlink<A> {
     blink: Blink<A>,
