@@ -160,6 +160,12 @@ where
         }
     }
 
+    /// Returns reference to the underlying allocator used by this blink allocator.
+    #[inline(always)]
+    pub const fn inner(&self) -> &A {
+        &self.allocator
+    }
+
     /// Creates new blink allocator that uses global allocator
     /// to allocate memory chunks.
     /// With this method you can specify initial chunk size.
