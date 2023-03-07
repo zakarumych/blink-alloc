@@ -1,27 +1,49 @@
 #![doc = include_str!("../README.md")]
-#![cfg_attr(not(test), no_std)]
+#![cfg_attr(not(any(feature = "std")), no_std)]
 #![cfg_attr(feature = "nightly", feature(allocator_api))]
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
-#[cfg(feature = "alloc")]
-macro_rules! with_global_default {
-    ($(#[$meta:meta])* $v:vis struct $name:ident<$($lt:lifetime,)* $($generic:ident $(: $bound:path $(: $bounds:path )*)? $(= +$global:ty)? $(= $gtype:ty)?),+> { $($fvis:vis $fname:ident: $ftype:ty),* $(,)? }) => {
+macro_rules! feature_switch {
+    ( ($feature:literal => $with:path | $without:path) ($($args:tt)*)) => {
+        #[cfg(feature = $feature)]
+        $with!($($args)*);
+
+        #[cfg(not(feature = $feature))]
+        $without!($($args)*);
+    };
+}
+
+#[allow(unused)]
+macro_rules! with_default {
+    ($(#[$meta:meta])* $v:vis struct $name:ident<$($lt:lifetime,)* $($generic:ident $(: $bound:path $(: $bounds:path )*)? $(= +$default:ty)? $(= $default_type:ty)?),+> { $($fvis:vis $fname:ident: $ftype:ty),* $(,)? }) => {
         $(#[$meta])*
-        $v struct $name<$($lt,)* $($generic $(: $bound $(+ $bounds)*)? $(= $global)? $(= $gtype)?)+> {
+        $v struct $name<$($lt,)* $($generic $(: $bound $(+ $bounds)*)? $(= $default)? $(= $default_type)?)+> {
             $($fvis $fname: $ftype,)*
         }
     };
 }
 
-#[cfg(not(feature = "alloc"))]
-macro_rules! with_global_default {
-    ($(#[$meta:meta])* $v:vis struct $name:ident<$($lt:lifetime,)* $($generic:ident $(: $bound:path $(: $bounds:path )*)? $(= +$global:ty)? $(= $gtype:ty)?),+> { $($fvis:vis $fname:ident: $ftype:ty),* $(,)? }) => {
+#[allow(unused)]
+macro_rules! without_default {
+    ($(#[$meta:meta])* $v:vis struct $name:ident<$($lt:lifetime,)* $($generic:ident $(: $bound:path $(: $bounds:path )*)? $(= +$default:ty)? $(= $default_type:ty)?),+> { $($fvis:vis $fname:ident: $ftype:ty),* $(,)? }) => {
         $(#[$meta])*
-        $v struct $name<$($lt,)* $($generic $(: $bound $(+ $bounds)*)? $(= $gtype)?)+> {
+        $v struct $name<$($lt,)* $($generic $(: $bound $(+ $bounds)*)? $(= $default_type)?)+> {
             $($fvis $fname: $ftype,)*
         }
+    };
+}
+
+macro_rules! switch_alloc_default {
+    ($($args:tt)*) => {
+        feature_switch!{("alloc" => with_default | without_default) ($($args)*)}
+    };
+}
+
+macro_rules! switch_std_default {
+    ($($args:tt)*) => {
+        feature_switch!{("std" => with_default | without_default) ($($args)*)}
     };
 }
 
@@ -29,6 +51,7 @@ mod api;
 mod arena;
 mod blink;
 mod drop_list;
+mod global;
 mod local;
 
 #[cfg(feature = "sync")]
@@ -40,17 +63,21 @@ mod cache;
 #[cfg(test)]
 mod tests;
 
-#[cfg(all(feature = "oom_handling", not(no_global_oom_handling)))]
+#[cfg(not(no_global_oom_handling))]
 mod oom;
 
 pub use self::{
     api::BlinkAllocator,
     blink::{Blink, Emplace, IteratorExt, SendBlink},
+    global::local::UnsafeGlobalBlinkAlloc,
     local::BlinkAlloc,
 };
 
 #[cfg(feature = "sync")]
 pub use self::sync::{LocalBlinkAlloc, SyncBlinkAlloc};
+
+#[cfg(feature = "sync")]
+pub use self::global::sync::GlobalBlinkAlloc;
 
 #[cfg(all(feature = "sync", feature = "alloc"))]
 pub use self::cache::BlinkAllocCache;

@@ -131,6 +131,7 @@ Initialize and start putting values there.
 ```rust
 use blink_alloc::Blink;
 
+#[cfg(feature = "alloc")]
 fn main() {
     // `Blink::new` uses `BlinkAlloc<Global>`
     let mut blink = Blink::new();
@@ -154,23 +155,25 @@ fn main() {
     assert_eq!(&*slice, &[1, 2, 4, 5, 7, 8]);
     blink.reset();
 }
+#[cfg(not(feature = "alloc"))] fn main() {}
 ```
 
 ```rust
 #![cfg_attr(feature = "nightly", feature(allocator_api))]
 use blink_alloc::BlinkAlloc;
 
+#[cfg(feature = "alloc")]
 fn main() {
-    #[cfg(feature = "nightly")]
-    {
-        let mut blink = BlinkAlloc::new();
-        let mut vec = Vec::new_in(&blink);
-        vec.extend((1..10).map(|x| x * 3 - 2));
+    use allocator_api2::vec::Vec;
 
-        drop(vec);
-        blink.reset();
-    }
+    let mut blink = BlinkAlloc::new();
+    let mut vec = Vec::new_in(&blink);
+    vec.extend((1..10).map(|x| x * 3 - 2));
+
+    drop(vec);
+    blink.reset();
 }
+#[cfg(not(feature = "alloc"))] fn main() {}
 ```
 
 # No-std
