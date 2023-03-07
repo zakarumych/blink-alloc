@@ -391,7 +391,7 @@ where
         old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
-        SyncBlinkAlloc::resize(&self, ptr, old_layout, new_layout)
+        SyncBlinkAlloc::resize(self, ptr, old_layout, new_layout)
     }
 
     #[inline(always)]
@@ -411,7 +411,7 @@ where
         old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
-        SyncBlinkAlloc::resize_zeroed(&self, ptr, old_layout, new_layout)
+        SyncBlinkAlloc::resize_zeroed(self, ptr, old_layout, new_layout)
     }
 
     #[inline(always)]
@@ -441,7 +441,7 @@ where
         old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
-        SyncBlinkAlloc::resize(&self, ptr, old_layout, new_layout)
+        SyncBlinkAlloc::resize(self, ptr, old_layout, new_layout)
     }
 
     #[inline(always)]
@@ -461,7 +461,7 @@ where
         old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
-        SyncBlinkAlloc::resize_zeroed(&self, ptr, old_layout, new_layout)
+        SyncBlinkAlloc::resize_zeroed(self, ptr, old_layout, new_layout)
     }
 
     #[inline(always)]
@@ -647,7 +647,7 @@ where
         old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
-        LocalBlinkAlloc::resize(&self, ptr, old_layout, new_layout)
+        LocalBlinkAlloc::resize(self, ptr, old_layout, new_layout)
     }
 
     #[inline(always)]
@@ -667,12 +667,12 @@ where
         old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
-        LocalBlinkAlloc::resize_zeroed(&self, ptr, old_layout, new_layout)
+        LocalBlinkAlloc::resize_zeroed(self, ptr, old_layout, new_layout)
     }
 
     #[inline(always)]
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
-        LocalBlinkAlloc::deallocate(&self, ptr, layout.size())
+        LocalBlinkAlloc::deallocate(self, ptr, layout.size())
     }
 }
 
@@ -697,7 +697,7 @@ where
         old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
-        LocalBlinkAlloc::resize(&self, ptr, old_layout, new_layout)
+        LocalBlinkAlloc::resize(self, ptr, old_layout, new_layout)
     }
 
     #[inline(always)]
@@ -717,12 +717,12 @@ where
         old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
-        LocalBlinkAlloc::resize_zeroed(&self, ptr, old_layout, new_layout)
+        LocalBlinkAlloc::resize_zeroed(self, ptr, old_layout, new_layout)
     }
 
     #[inline(always)]
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
-        LocalBlinkAlloc::deallocate(&self, ptr, layout.size())
+        LocalBlinkAlloc::deallocate(self, ptr, layout.size())
     }
 }
 
