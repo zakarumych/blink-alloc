@@ -1,7 +1,7 @@
 //! This module provides multi-threaded blink allocator\
 //! with sync resets.
 
-use core::{alloc::Layout, ptr::NonNull};
+use core::{alloc::Layout, mem::ManuallyDrop, ptr::NonNull};
 
 use allocator_api2::alloc::{AllocError, Allocator};
 
@@ -267,6 +267,16 @@ where
         }
     }
 
+    /// Resets this allocator, deallocating all chunks.
+    #[inline(always)]
+    pub fn reset_final(&mut self) {
+        // Safety:
+        // Same instance is used for all allocations and resets.
+        unsafe {
+            self.arena.reset(false, &self.allocator);
+        }
+    }
+
     /// Resets this allocator, deallocating all chunks except the last one.
     /// Last chunk will be reused.
     /// With steady memory usage after few iterations
@@ -286,6 +296,15 @@ where
         unsafe {
             self.arena.reset_unchecked(true, &self.allocator);
         }
+    }
+
+    /// Unwrap this allocator, returning the underlying allocator.
+    /// Leaks allocated chunks.
+    ///
+    /// To deallocate all chunks call [`reset_final`](BlinkAlloc::reset_final) first.
+    pub fn into_inner(self) -> A {
+        let me = ManuallyDrop::new(self);
+        unsafe { core::ptr::read(&me.allocator) }
     }
 }
 

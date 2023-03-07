@@ -1,6 +1,8 @@
 use core::{
     alloc::{GlobalAlloc, Layout},
+    cell::UnsafeCell,
     ptr::{null_mut, NonNull},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 use allocator_api2::alloc::Allocator;
@@ -24,9 +26,14 @@ switch_std_default! {
     /// }
     /// ```
     pub struct GlobalBlinkAlloc<A: Allocator = +std::alloc::System> {
-        inner: SyncBlinkAlloc<A>,
+        inner: UnsafeCell<SyncBlinkAlloc<A>>,
+        #[cfg(debug_assertions)]
+        allocations: AtomicU64,
     }
 }
+
+unsafe impl<A: Allocator + Send> Send for GlobalBlinkAlloc<A> {}
+unsafe impl<A: Allocator + Sync> Sync for GlobalBlinkAlloc<A> {}
 
 #[cfg(feature = "std")]
 impl GlobalBlinkAlloc<std::alloc::System> {
@@ -48,9 +55,7 @@ impl GlobalBlinkAlloc<std::alloc::System> {
     /// }
     /// ```
     pub const fn new() -> Self {
-        Self {
-            inner: SyncBlinkAlloc::new_in(std::alloc::System),
-        }
+        GlobalBlinkAlloc::new_in(std::alloc::System)
     }
 
     /// Create a new [`GlobalBlinkAlloc`].
@@ -72,9 +77,7 @@ impl GlobalBlinkAlloc<std::alloc::System> {
     /// }
     /// ```
     pub const fn with_chunk_size(chunk_size: usize) -> Self {
-        Self {
-            inner: SyncBlinkAlloc::with_chunk_size_in(chunk_size, std::alloc::System),
-        }
+        GlobalBlinkAlloc::with_chunk_size_in(chunk_size, std::alloc::System)
     }
 }
 
@@ -101,8 +104,10 @@ where
     /// }
     /// ```
     pub const fn new_in(allocator: A) -> Self {
-        Self {
-            inner: SyncBlinkAlloc::new_in(allocator),
+        GlobalBlinkAlloc {
+            inner: UnsafeCell::new(SyncBlinkAlloc::new_in(allocator)),
+            #[cfg(debug_assertions)]
+            allocations: AtomicU64::new(0),
         }
     }
 
@@ -126,8 +131,10 @@ where
     /// }
     /// ```
     pub const fn with_chunk_size_in(chunk_size: usize, allocator: A) -> Self {
-        Self {
-            inner: SyncBlinkAlloc::with_chunk_size_in(chunk_size, allocator),
+        GlobalBlinkAlloc {
+            inner: UnsafeCell::new(SyncBlinkAlloc::with_chunk_size_in(chunk_size, allocator)),
+            #[cfg(debug_assertions)]
+            allocations: AtomicU64::new(0),
         }
     }
 
@@ -145,24 +152,88 @@ where
     /// # Example
     ///
     /// ```
-    /// use blink_alloc::GlobalBlinkAlloc;
+    /// # #[cfg(feature = "std")] fn main() {
+    /// use blink_alloc::UnsafeGlobalBlinkAlloc;
     ///
     /// #[global_allocator]
-    /// static GLOBAL_ALLOC: GlobalBlinkAlloc = GlobalBlinkAlloc::new();
+    /// static GLOBAL_ALLOC: UnsafeGlobalBlinkAlloc = unsafe { UnsafeGlobalBlinkAlloc::new() };
     ///
-    /// fn main() {
-    ///     let b = Box::new(42);
-    ///     let v = vec![1, 2, 3];
-    ///     drop(b);
-    ///     drop(v);
+    /// unsafe { GLOBAL_ALLOC.scope() };
     ///
-    ///     // Safety: allocated memory won't be used after reset.
-    ///     unsafe { GLOBAL_ALLOC.reset() };
-    /// }
+    /// let b = Box::new(42);
+    /// let v = vec![1, 2, 3];
+    /// drop(b);
+    /// drop(v);
+    ///
+    /// // Safety: memory allocated after `scope` call won't be used after reset.
+    /// unsafe { GLOBAL_ALLOC.reset() };
+    /// # }
+    /// # #[cfg(not(feature = "std"))] fn main() {}
     /// ```
     #[inline(always)]
     pub unsafe fn reset(&self) {
-        self.inner.reset_unchecked();
+        #[cfg(debug_assertions)]
+        {
+            assert_eq!(
+                self.allocations.load(Ordering::SeqCst),
+                0,
+                "Not everything was deallocated"
+            );
+        }
+
+        (&*self.inner.get()).reset_unchecked();
+    }
+
+    /// Refreshes scope of this allocator.
+    ///
+    /// Forgets previous allocations so that deallocating them will have no effect.
+    /// Additionally resets will not invalidate allocations made before this call.
+    ///
+    /// When used as `#[global_allocator]` this method should be called
+    /// at least once after `main` starts if `reset` is going to be ever called.
+    ///
+    /// # Safety
+    ///
+    /// This method is not thread-local.
+    /// Caller must externally synchronize this method call with other threads
+    /// accessing this allocator.
+    #[inline(always)]
+    pub unsafe fn scope(&self) {
+        let allocator = core::ptr::read(self.inner.get()).into_inner();
+        core::ptr::write(self.inner.get(), SyncBlinkAlloc::new_in(allocator));
+
+        #[cfg(debug_assertions)]
+        {
+            self.allocations.store(0, Ordering::SeqCst);
+        }
+    }
+
+    /// Refreshes scope of this allocator.
+    /// With this method you can specify initial chunk size.
+    ///
+    /// Forgets previous allocations so that deallocating them will have no effect.
+    /// Additionally resets will not invalidate allocations made before this call.
+    ///
+    /// When used as `#[global_allocator]` this method should be called
+    /// at least once after `main` starts if `reset` is going to be ever called.
+    ///
+    /// # Safety
+    ///
+    /// This method is not thread-local.
+    /// Caller must externally synchronize this method call with other threads
+    /// accessing this allocator.
+    #[inline(always)]
+    pub unsafe fn scope_with_chunk_size(&self, chunk_size: usize) {
+        let allocator = core::ptr::read(self.inner.get()).into_inner();
+        core::ptr::write(
+            self.inner.get(),
+            SyncBlinkAlloc::with_chunk_size_in(chunk_size, allocator),
+        );
+
+        #[cfg(debug_assertions)]
+        {
+            self.allocations.store(0, Ordering::SeqCst);
+        }
     }
 
     /// Creates a new thread-local blink allocator proxy
@@ -206,7 +277,7 @@ where
     /// # }
     /// ```
     pub fn local(&self) -> LocalBlinkAlloc<'_, A> {
-        self.inner.local()
+        unsafe { &*self.inner.get() }.local()
     }
 }
 
@@ -216,23 +287,42 @@ where
 {
     #[inline]
     unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
-        match self.inner.allocate(layout) {
-            Ok(ptr) => ptr.as_ptr().cast(),
+        match (&*self.inner.get()).allocate(layout) {
+            Ok(ptr) => {
+                #[cfg(debug_assertions)]
+                {
+                    self.allocations.fetch_add(1, Ordering::SeqCst);
+                }
+                ptr.as_ptr().cast()
+            }
             Err(_) => null_mut(),
         }
     }
 
     #[inline]
     unsafe fn dealloc(&self, ptr: *mut u8, layout: core::alloc::Layout) {
-        if let Some(ptr) = NonNull::new(ptr) {
-            self.inner.deallocate(ptr, layout.size());
+        let ptr = NonNull::new_unchecked(ptr);
+        (&*self.inner.get()).deallocate(ptr, layout.size());
+        #[cfg(debug_assertions)]
+        {
+            let _ = self
+                .allocations
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |a| {
+                    Some(a.saturating_sub(1))
+                });
         }
     }
 
     #[inline]
     unsafe fn alloc_zeroed(&self, layout: core::alloc::Layout) -> *mut u8 {
-        match self.inner.allocate_zeroed(layout) {
-            Ok(ptr) => ptr.as_ptr().cast(),
+        match (&*self.inner.get()).allocate_zeroed(layout) {
+            Ok(ptr) => {
+                #[cfg(debug_assertions)]
+                {
+                    self.allocations.fetch_add(1, Ordering::SeqCst);
+                }
+                ptr.as_ptr().cast()
+            }
             Err(_) => null_mut(),
         }
     }
@@ -249,8 +339,8 @@ where
         };
 
         let result = match NonNull::new(ptr) {
-            None => self.inner.allocate(new_layout),
-            Some(ptr) => self.inner.resize(ptr, layout, new_layout),
+            None => (&*self.inner.get()).allocate(new_layout),
+            Some(ptr) => (&*self.inner.get()).resize(ptr, layout, new_layout),
         };
 
         match result {
