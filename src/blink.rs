@@ -123,6 +123,7 @@ pub trait IteratorExt: Iterator {
 
     /// Attempts to collect iterator into blink allocator and return slice reference.
     #[inline(always)]
+    #[allow(clippy::type_complexity)]
     fn try_collect_to_blink<A: BlinkAllocator>(
         self,
         blink: &mut Blink<A>,
@@ -136,6 +137,7 @@ pub trait IteratorExt: Iterator {
 
     /// Attempts to collect iterator into blink allocator and return slice reference.
     #[inline(always)]
+    #[allow(clippy::type_complexity)]
     fn try_collect_to_blink_shared<A: BlinkAllocator>(
         self,
         blink: &mut Blink<A>,
@@ -148,6 +150,7 @@ pub trait IteratorExt: Iterator {
 
     /// Attempts to collect iterator into blink allocator and return slice reference.
     #[inline(always)]
+    #[allow(clippy::type_complexity)]
     fn try_collect_to_blink_no_drop<A: BlinkAllocator>(
         self,
         blink: &mut Blink<A>,
@@ -1018,6 +1021,7 @@ where
     /// ```
     #[cfg(not(no_global_oom_handling))]
     #[inline(always)]
+    #[allow(clippy::mut_from_ref)]
     pub fn put<T: 'static>(&self, value: T) -> &mut T {
         unsafe {
             self._try_emplace(
@@ -1061,6 +1065,7 @@ where
     /// ```
     #[cfg(not(no_global_oom_handling))]
     #[inline(always)]
+    #[allow(clippy::mut_from_ref)]
     pub fn put_no_drop<T>(&self, value: T) -> &mut T {
         unsafe {
             self._try_emplace(

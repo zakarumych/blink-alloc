@@ -99,6 +99,7 @@ impl DropList {
     /// # Safety
     ///
     /// `item` reference must be valid until next call to [`DropList::reset`].
+    #[allow(clippy::mut_from_ref)]
     pub unsafe fn add<'a, 'b: 'a, T: ?Sized>(&'a self, item: &'b mut DropItem<T>) -> &'a mut T {
         item.drops.next = self.root.take();
         let item = NonNull::from(item);
