@@ -292,58 +292,63 @@ where
         unsafe { self.offset_from_end(self.base()) }
     }
 
-    /// One round of allocation attempt.
-    #[inline(always)]
-    fn alloc_round(
-        &self,
-        cursor: *mut u8,
-        layout: Layout,
-        exchange: impl FnOnce(*mut u8) -> Result<(), *mut u8>,
-    ) -> Option<Result<NonNull<[u8]>, *mut u8>> {
-        let cursor_addr = sptr::Strict::addr(cursor);
+    // /// One round of allocation attempt.
+    // #[inline(always)]
+    // fn alloc_round(
+    //     &self,
+    //     cursor: *mut u8,
+    //     layout: Layout,
+    //     // exchange: impl FnOnce(*mut u8) -> Result<(), *mut u8>,
+    // ) -> Option<Result<NonNull<[u8]>, *mut u8>> {
+    //     let cursor_addr = sptr::Strict::addr(cursor);
 
-        let layout_sum = layout_sum(&layout);
+    //     let layout_sum = layout_sum(&layout);
 
-        let unaligned = cursor_addr.checked_add(layout_sum)?;
+    //     let unaligned = cursor_addr.checked_add(layout_sum)?;
 
-        let aligned_addr = align_down(unaligned - layout.size(), layout.align());
+    //     let aligned_addr = align_down(unaligned - layout.size(), layout.align());
 
-        debug_assert!(
-            aligned_addr >= cursor_addr,
-            "aligned_addr addr must not be less than cursor"
-        );
-        debug_assert!(
-            (aligned_addr - cursor_addr) < layout.align(),
-            "Cannot waste space more than alignment size"
-        );
+    //     debug_assert!(
+    //         aligned_addr >= cursor_addr,
+    //         "aligned_addr addr must not be less than cursor"
+    //     );
+    //     debug_assert!(
+    //         (aligned_addr - cursor_addr) < layout.align(),
+    //         "Cannot waste space more than alignment size"
+    //     );
 
-        let next_addr = aligned_addr + layout.size();
+    //     let next_addr = aligned_addr + layout.size();
 
-        let end_addr = sptr::Strict::addr(self.end);
-        if next_addr > end_addr {
-            return None;
-        }
+    //     let end_addr = sptr::Strict::addr(self.end);
+    //     if next_addr > end_addr {
+    //         return None;
+    //     }
 
-        let aligned = unsafe { cursor.add(aligned_addr - cursor_addr) };
-        let next = unsafe { aligned.add(layout.size()) };
+    //     let aligned = unsafe { cursor.add(aligned_addr - cursor_addr) };
+    //     let next = unsafe { aligned.add(layout.size()) };
 
-        if let Err(updated) = exchange(next) {
-            return Some(Err(updated));
-        };
+    //     if let Err(updated) = self.cursor.compare_exchange_weak(
+    //         cursor,
+    //         next,
+    //         Ordering::Acquire, // Memory access valid only *after* this succeeds.
+    //         Ordering::Relaxed,
+    //     ) {
+    //         return Some(Err(updated));
+    //     };
 
-        // Actual allocation length.
-        let len = next_addr - cursor_addr;
-        debug_assert!(len >= layout.size());
+    //     // Actual allocation length.
+    //     let len = next_addr - cursor_addr;
+    //     debug_assert!(len >= layout.size());
 
-        // Safety:
-        // offset is within unused allocated memory range starting from base.
-        // base is not null.
-        unsafe {
-            debug_assert_eq!(aligned_addr % layout.align(), 0);
-            let slice = core::ptr::slice_from_raw_parts_mut(aligned, len);
-            Some(Ok(NonNull::new_unchecked(slice)))
-        }
-    }
+    //     // Safety:
+    //     // offset is within unused allocated memory range starting from base.
+    //     // base is not null.
+    //     unsafe {
+    //         debug_assert_eq!(aligned_addr % layout.align(), 0);
+    //         let slice = core::ptr::slice_from_raw_parts_mut(aligned, len);
+    //         Some(Ok(NonNull::new_unchecked(slice)))
+    //     }
+    // }
 
     // Safety: `chunk` must be a pointer to the valid chunk allocation.
     #[inline(always)]
@@ -356,27 +361,61 @@ where
         let mut cursor = me.cursor.load(Ordering::Relaxed);
 
         loop {
-            let result = me.alloc_round(cursor, layout, |aligned| {
-                me.cursor.compare_exchange_weak(
-                    cursor,
-                    aligned,
-                    Ordering::Acquire, // Memory access valid only *after* this succeeds.
-                    Ordering::Relaxed,
-                )
-            })?;
+            let cursor_addr = sptr::Strict::addr(cursor);
 
-            match result {
-                Ok(slice) => {
-                    if ZEROED {
-                        unsafe { ptr::write_bytes(slice.as_ptr().cast::<u8>(), 0, slice.len()) }
-                    }
-                    return Some(slice);
-                }
-                Err(updated) => {
-                    cold();
-                    cursor = updated;
-                }
+            let layout_sum = layout_sum(&layout);
+
+            let unaligned = cursor_addr.checked_add(layout_sum)?;
+
+            let aligned_addr = align_down(unaligned - layout.size(), layout.align());
+
+            debug_assert!(
+                aligned_addr >= cursor_addr,
+                "aligned_addr addr must not be less than cursor"
+            );
+            debug_assert!(
+                (aligned_addr - cursor_addr) < layout.align(),
+                "Cannot waste space more than alignment size"
+            );
+
+            let next_addr = aligned_addr + layout.size();
+
+            let end_addr = sptr::Strict::addr(me.end);
+            if next_addr > end_addr {
+                return None;
             }
+
+            let aligned = unsafe { cursor.add(aligned_addr - cursor_addr) };
+            let next = unsafe { aligned.add(layout.size()) };
+
+            if let Err(updated) = me.cursor.compare_exchange_weak(
+                cursor,
+                next,
+                Ordering::Acquire, // Memory access valid only *after* this succeeds.
+                Ordering::Relaxed,
+            ) {
+                cursor = updated;
+                continue;
+            };
+
+            // Actual allocation length.
+            let len = next_addr - aligned_addr;
+            debug_assert!(len >= layout.size());
+
+            if ZEROED {
+                unsafe { ptr::write_bytes(aligned, 0, len) }
+            }
+
+            // Safety:
+            // offset is within unused allocated memory range starting from base.
+            // base is not null.
+            let slice = unsafe {
+                debug_assert_eq!(aligned_addr % layout.align(), 0);
+                let slice = core::ptr::slice_from_raw_parts_mut(aligned, len);
+                NonNull::new_unchecked(slice)
+            };
+
+            return Some(slice);
         }
     }
 
@@ -406,7 +445,7 @@ where
         if old_layout.align() >= new_layout.align() {
             // || addr & (new_layout.align() - 1) == 0 {
             if new_layout.size() <= old_layout.size() {
-                let slice = core::ptr::slice_from_raw_parts_mut(ptr.as_ptr(), new_layout.size());
+                let slice = core::ptr::slice_from_raw_parts_mut(ptr.as_ptr(), old_layout.size());
                 return Some(NonNull::new_unchecked(slice));
             } else {
                 // Safety:
@@ -433,16 +472,18 @@ where
                     );
 
                     if let Ok(()) = result {
-                        if ZEROED && old_layout.size() < new_layout.size() {
+                        let len = next_addr - addr;
+                        debug_assert!(len >= new_layout.size());
+
+                        if ZEROED && old_layout.size() < len {
                             core::ptr::write_bytes(
                                 ptr.as_ptr().add(old_layout.size()),
                                 0,
-                                new_layout.size() - old_layout.size(),
+                                len - old_layout.size(),
                             );
                         }
 
-                        let slice =
-                            core::ptr::slice_from_raw_parts_mut(ptr.as_ptr(), new_layout.size());
+                        let slice = core::ptr::slice_from_raw_parts_mut(ptr.as_ptr(), len);
                         return Some(NonNull::new_unchecked(slice));
                     }
                     cold();
