@@ -1,6 +1,6 @@
 [package]
 name = "blink-alloc"
-version = "0.2.5"
+version = "0.3.0"
 edition = "2018"
 authors = ["Zakarum <zaq.dev@icloud.com>"]
 license = "MIT OR Apache-2.0"
@@ -21,8 +21,7 @@ default = ["std"]
 
 [dependencies]
 parking_lot = {  version = "0.12", optional = true }
-sptr = "0.3"
-allocator-api2 = { version = "0.2.4", default-features = false }
+allocator-api2 = { version = "0.2.8", default-features = false, path = "../allocator-api2" }
 
 [dev-dependencies]
 criterion = "0.4"

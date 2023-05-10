@@ -14,7 +14,7 @@ use allocator_api2::alloc::Global;
 
 use crate::{
     api::BlinkAllocator,
-    arena::{Arena, ArenaLocal, ArenaSync},
+    arena::{ArenaLocal, ArenaSync},
 };
 
 switch_alloc_default! {
@@ -232,15 +232,10 @@ where
     pub fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
         // Safety:
         // Same instance is used for all allocations and resets.
-        unsafe { self.arena.alloc::<false>(layout, &self.allocator) }
-    }
-
-    /// Behaves like [`allocate`](SyncBlinkAlloc::allocate), but also ensures that the returned memory is zero-initialized.
-    #[inline(always)]
-    pub fn allocate_zeroed(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-        // Safety:
-        // Same instance is used for all allocations and resets.
-        unsafe { self.arena.alloc::<true>(layout, &self.allocator) }
+        if let Some(ptr) = unsafe { self.arena.alloc_fast(layout) } {
+            return Ok(ptr);
+        }
+        unsafe { self.arena.alloc_slow(layout, &self.allocator) }
     }
 
     /// Resizes memory allocation.
@@ -262,31 +257,16 @@ where
         old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
-        // Safety:
-        // Same instance is used for all allocations and resets.
-        unsafe {
-            self.arena
-                .resize::<false>(ptr, old_layout, new_layout, &self.allocator)
+        if let Some(ptr) = unsafe { self.arena.resize_fast(ptr, old_layout, new_layout) } {
+            return Ok(ptr);
         }
-    }
 
-    /// Behaves like [`resize`](SyncBlinkAlloc::resize), but also ensures that the returned memory is zero-initialized.
-    ///
-    /// # Safety
-    ///
-    /// See [`resize`](SyncBlinkAlloc::resize) for safety requirements.
-    #[inline(always)]
-    pub unsafe fn resize_zeroed(
-        &self,
-        ptr: NonNull<u8>,
-        old_layout: Layout,
-        new_layout: Layout,
-    ) -> Result<NonNull<[u8]>, AllocError> {
         // Safety:
         // Same instance is used for all allocations and resets.
+        // `ptr` was allocated by this allocator.
         unsafe {
             self.arena
-                .resize::<true>(ptr, old_layout, new_layout, &self.allocator)
+                .resize_slow(ptr, old_layout, new_layout, &self.allocator)
         }
     }
 
@@ -386,11 +366,6 @@ where
     }
 
     #[inline(always)]
-    fn allocate_zeroed(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-        SyncBlinkAlloc::allocate_zeroed(self, layout)
-    }
-
-    #[inline(always)]
     unsafe fn shrink(
         &self,
         ptr: NonNull<u8>,
@@ -408,16 +383,6 @@ where
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
         SyncBlinkAlloc::resize(self, ptr, old_layout, new_layout)
-    }
-
-    #[inline(always)]
-    unsafe fn grow_zeroed(
-        &self,
-        ptr: NonNull<u8>,
-        old_layout: Layout,
-        new_layout: Layout,
-    ) -> Result<NonNull<[u8]>, AllocError> {
-        SyncBlinkAlloc::resize_zeroed(self, ptr, old_layout, new_layout)
     }
 
     #[inline(always)]
@@ -458,16 +423,6 @@ where
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
         SyncBlinkAlloc::resize(self, ptr, old_layout, new_layout)
-    }
-
-    #[inline(always)]
-    unsafe fn grow_zeroed(
-        &self,
-        ptr: NonNull<u8>,
-        old_layout: Layout,
-        new_layout: Layout,
-    ) -> Result<NonNull<[u8]>, AllocError> {
-        SyncBlinkAlloc::resize_zeroed(self, ptr, old_layout, new_layout)
     }
 
     #[inline(always)]
@@ -521,15 +476,10 @@ where
     pub fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
         // Safety:
         // Same instance is used for all allocations and resets.
-        unsafe { self.arena.alloc::<false>(layout, self.shared) }
-    }
-
-    /// Behaves like [`allocate`](LocalBlinkAlloc::allocate), but also ensures that the returned memory is zero-initialized.
-    #[inline(always)]
-    pub fn allocate_zeroed(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-        // Safety:
-        // Same instance is used for all allocations and resets.
-        unsafe { self.arena.alloc::<true>(layout, self.shared) }
+        if let Some(ptr) = unsafe { self.arena.alloc_fast(layout) } {
+            return Ok(ptr);
+        }
+        unsafe { self.arena.alloc_slow(layout, &self.shared) }
     }
 
     /// Resizes memory allocation.
@@ -551,31 +501,16 @@ where
         old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
-        // Safety:
-        // Same instance is used for all allocations and resets.
-        unsafe {
-            self.arena
-                .resize::<false>(ptr, old_layout, new_layout, self.shared)
+        if let Some(ptr) = unsafe { self.arena.resize_fast(ptr, old_layout, new_layout) } {
+            return Ok(ptr);
         }
-    }
 
-    /// Behaves like [`resize`](LocalBlinkAlloc::resize), but also ensures that the returned memory is zero-initialized.
-    ///
-    /// # Safety
-    ///
-    /// See [`resize`](LocalBlinkAlloc::resize) for safety requirements.
-    #[inline(always)]
-    pub unsafe fn resize_zeroed(
-        &self,
-        ptr: NonNull<u8>,
-        old_layout: Layout,
-        new_layout: Layout,
-    ) -> Result<NonNull<[u8]>, AllocError> {
         // Safety:
         // Same instance is used for all allocations and resets.
+        // `ptr` was allocated by this allocator.
         unsafe {
             self.arena
-                .resize::<true>(ptr, old_layout, new_layout, self.shared)
+                .resize_slow(ptr, old_layout, new_layout, &self.shared)
         }
     }
 
@@ -642,11 +577,6 @@ where
     }
 
     #[inline(always)]
-    fn allocate_zeroed(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-        LocalBlinkAlloc::allocate_zeroed(self, layout)
-    }
-
-    #[inline(always)]
     unsafe fn shrink(
         &self,
         ptr: NonNull<u8>,
@@ -664,16 +594,6 @@ where
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
         LocalBlinkAlloc::resize(self, ptr, old_layout, new_layout)
-    }
-
-    #[inline(always)]
-    unsafe fn grow_zeroed(
-        &self,
-        ptr: NonNull<u8>,
-        old_layout: Layout,
-        new_layout: Layout,
-    ) -> Result<NonNull<[u8]>, AllocError> {
-        LocalBlinkAlloc::resize_zeroed(self, ptr, old_layout, new_layout)
     }
 
     #[inline(always)]
@@ -714,16 +634,6 @@ where
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, AllocError> {
         LocalBlinkAlloc::resize(self, ptr, old_layout, new_layout)
-    }
-
-    #[inline(always)]
-    unsafe fn grow_zeroed(
-        &self,
-        ptr: NonNull<u8>,
-        old_layout: Layout,
-        new_layout: Layout,
-    ) -> Result<NonNull<[u8]>, AllocError> {
-        LocalBlinkAlloc::resize_zeroed(self, ptr, old_layout, new_layout)
     }
 
     #[inline(always)]
