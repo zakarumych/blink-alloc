@@ -199,6 +199,12 @@ switch_alloc_default! {
     }
 }
 
+// Safety: `Blink` is not auto-send because of `DropList`.
+// The `DropList` contains pointers to objects allocated from `Blink`.
+// If `Blink` is moved to another thread (or `&mut Blink`) then all returned pointers
+// to allocated objects were invalidated.
+unsafe impl<A> Send for Blink<A> where A: Send {}
+
 impl<A> Default for Blink<A>
 where
     A: Default,

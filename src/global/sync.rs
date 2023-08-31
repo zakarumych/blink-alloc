@@ -275,7 +275,7 @@ where
         (*self.state.get()).enabled = true;
     }
 
-    /// Switches allocator to blink mode.
+    /// Switches allocator to direct mode.
     /// All allocations will be served by underlying allocator.
     ///
     /// The type is created in direct mode.

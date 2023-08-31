@@ -1,6 +1,6 @@
 [package]
 name = "blink-alloc"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2018"
 authors = ["Zakarum <zaq.dev@icloud.com>"]
 license = "MIT OR Apache-2.0"
@@ -9,18 +9,19 @@ homepage = "https://github.com/zakarumych/blink-alloc"
 repository = "https://github.com/zakarumych/blink-alloc"
 readme = "README.md"
 description = "Fast, concurrent, arena-based allocator with drop support"
-keywords = ["allocator", "arena", "concurrent", "drop"]
+keywords = ["allocator", "arena", "concurrent", "drop", "no-std"]
+categories = ["memory-management", "no-std"]
 
 [features]
 nightly = ["allocator-api2/nightly", "bumpalo/allocator_api"]
 alloc = ["allocator-api2/alloc"]
-std = ["alloc", "allocator-api2/std",]
+std = ["alloc", "allocator-api2/std"]
 sync = ["parking_lot", "std"]
 
 default = ["std"]
 
 [dependencies]
-parking_lot = {  version = "0.12", optional = true }
+parking_lot = { version = "0.12", optional = true }
 allocator-api2 = { version = "0.2.8", default-features = false, path = "../allocator-api2" }
 
 [dev-dependencies]
