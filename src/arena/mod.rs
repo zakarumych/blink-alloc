@@ -185,8 +185,8 @@ macro_rules! with_cursor {
                 prev: Option<NonNull<Self>>,
             ) -> Result<NonNull<Self>, AllocError> {
                 let Some(size) = align_up(size, align_of::<Self>()) else {
-                                                                            return Err(AllocError);
-                                                                        };
+                    return Err(AllocError);
+                };
 
                 // Safety:
                 // size + (align - 1) hasn't overflow above.
@@ -483,7 +483,8 @@ macro_rules! with_cursor {
             if chunk_size < CHUNK_POWER_OF_TWO_THRESHOLD {
                 chunk_size = chunk_size.next_power_of_two();
             } else {
-                chunk_size = align_up(chunk_size, CHUNK_POWER_OF_TWO_THRESHOLD).unwrap_or(chunk_size);
+                chunk_size =
+                    align_up(chunk_size, CHUNK_POWER_OF_TWO_THRESHOLD).unwrap_or(chunk_size);
             }
 
             debug_assert_eq!(chunk_size % align_of::<ChunkHeader>(), 0);
@@ -516,11 +517,7 @@ macro_rules! with_cursor {
         }
 
         #[inline(always)]
-        pub unsafe fn dealloc(
-            root: Option<NonNull<ChunkHeader>>,
-            ptr: NonNull<u8>,
-            size: usize,
-        ) {
+        pub unsafe fn dealloc(root: Option<NonNull<ChunkHeader>>, ptr: NonNull<u8>, size: usize) {
             if let Some(root) = root {
                 // Safety:
                 // `chunk` is a valid pointer to chunk allocation.
