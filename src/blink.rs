@@ -199,6 +199,13 @@ switch_alloc_default! {
     }
 }
 
+impl<A> Drop for Blink<A> {
+    #[inline(always)]
+    fn drop(&mut self) {
+        self.drop_all();
+    }
+}
+
 // Safety: `Blink` is not auto-send because of `DropList`.
 // The `DropList` contains pointers to objects allocated from `Blink`.
 // If `Blink` is moved to another thread (or `&mut Blink`) then all returned pointers
@@ -579,7 +586,8 @@ where
 
         loop {
             let (lower, upper) = iter.size_hint();
-            let Some(size_hint) = size_hint_and_one(lower, upper, guard.count.max(FASTER_START)) else {
+            let Some(size_hint) = size_hint_and_one(lower, upper, guard.count.max(FASTER_START))
+            else {
                 return Err(err(guard.flush(), one_more, None));
             };
 
@@ -746,7 +754,8 @@ where
 
         loop {
             let (lower, upper) = iter.size_hint();
-            let Some(size_hint) = size_hint_and_one(lower, upper, guard.count.max(FASTER_START)) else {
+            let Some(size_hint) = size_hint_and_one(lower, upper, guard.count.max(FASTER_START))
+            else {
                 return Err(err(guard.flush(), one_more, None));
             };
 

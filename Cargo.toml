@@ -22,7 +22,7 @@ default = ["std"]
 
 [dependencies]
 parking_lot = { version = "0.12", optional = true }
-allocator-api2 = { version = "0.2.8", default-features = false, path = "../allocator-api2" }
+allocator-api2 = { version = "0.2.8", default-features = false }
 
 [dev-dependencies]
 criterion = "0.4"
