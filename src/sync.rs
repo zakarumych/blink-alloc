@@ -479,7 +479,7 @@ where
         if let Some(ptr) = unsafe { self.arena.alloc_fast(layout) } {
             return Ok(ptr);
         }
-        unsafe { self.arena.alloc_slow(layout, &self.shared) }
+        unsafe { self.arena.alloc_slow(layout, self.shared) }
     }
 
     /// Resizes memory allocation.
@@ -510,7 +510,7 @@ where
         // `ptr` was allocated by this allocator.
         unsafe {
             self.arena
-                .resize_slow(ptr, old_layout, new_layout, &self.shared)
+                .resize_slow(ptr, old_layout, new_layout, self.shared)
         }
     }
 

@@ -1442,9 +1442,7 @@ fn size_hint_and_one(lower: usize, upper: Option<usize>, count: usize) -> Option
     let size_hint = lower.max(upper);
 
     // Add one more element to size hint.
-    let Some(size_hint) = size_hint.checked_add(1) else {
-        return None;
-    };
+    let size_hint = size_hint.checked_add(1)?;
 
     // Sum with current count.
     count.checked_add(size_hint)
