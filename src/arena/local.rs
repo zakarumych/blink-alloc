@@ -57,6 +57,7 @@ impl ArenaLocal {
         }
         None
     }
+
     #[inline(always)]
     pub unsafe fn alloc_slow(
         &self,

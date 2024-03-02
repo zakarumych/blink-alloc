@@ -46,7 +46,8 @@ fn layout_sum(layout: &Layout) -> usize {
     layout.size() + (layout.align() - 1)
 }
 
-pub trait CasPtr {
+pub(crate) trait CasPtr {
+    #[allow(dead_code)]
     fn new(value: *mut u8) -> Self;
     fn load(&self, order: Ordering) -> *mut u8;
     fn set(&mut self, value: *mut u8);
