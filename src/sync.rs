@@ -391,6 +391,7 @@ where
     }
 }
 
+#[cfg(not(feature = "nightly"))]
 unsafe impl<A> Allocator for &mut SyncBlinkAlloc<A>
 where
     A: Allocator,
@@ -602,6 +603,7 @@ where
     }
 }
 
+#[cfg(not(feature = "nightly"))]
 unsafe impl<A> Allocator for &mut LocalBlinkAlloc<'_, A>
 where
     A: Allocator,

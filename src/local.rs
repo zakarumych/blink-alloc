@@ -325,6 +325,7 @@ where
     }
 }
 
+#[cfg(not(feature = "nightly"))]
 unsafe impl<A> Allocator for &mut BlinkAlloc<A>
 where
     A: Allocator,
