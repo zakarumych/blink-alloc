@@ -11,10 +11,10 @@ use core::{
     sync::atomic::{AtomicPtr, Ordering},
 };
 
-#[cfg(feature = "nightly")]
-use core::alloc::{AllocError, Allocator};
 #[cfg(not(feature = "nightly"))]
 use allocator_api2::alloc::{AllocError, Allocator};
+#[cfg(feature = "nightly")]
+use core::alloc::{AllocError, Allocator};
 
 use crate::cold;
 

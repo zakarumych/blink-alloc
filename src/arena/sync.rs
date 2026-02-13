@@ -136,4 +136,32 @@ impl ArenaSync {
     // pub fn reset_leak(&mut self, keep_last: bool) {
     //     reset_leak(Cell::from_mut(&mut self.inner.get_mut().root), keep_last)
     // }
+
+    /// Returns the approximate number of bytes allocated from this arena.
+    ///
+    /// This is computed by summing the capacity of all previous chunks
+    /// (which are ~fully used, minus alignment padding) plus the cursor
+    /// offset in the current chunk. After warm-up (when a single chunk
+    /// serves all allocations), this is exact.
+    pub fn allocated_bytes(&self) -> usize {
+        let inner = self.inner.read();
+        let Some(root) = inner.root else {
+            return 0;
+        };
+        let chunk = unsafe { root.as_ref() };
+        let cursor = chunk.cursor.load(Ordering::Relaxed) as usize;
+        let base = chunk.base() as usize;
+        let current_used = cursor - base;
+        current_used + chunk.cumulative_size
+    }
+
+    /// Returns the total capacity of all chunks in this arena.
+    pub fn total_capacity(&self) -> usize {
+        let inner = self.inner.read();
+        let Some(root) = inner.root else {
+            return 0;
+        };
+        let chunk = unsafe { root.as_ref() };
+        chunk.cap() + chunk.cumulative_size
+    }
 }

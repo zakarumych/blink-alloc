@@ -7,10 +7,10 @@ use core::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-#[cfg(feature = "nightly")]
-use core::alloc::{AllocError, Allocator};
 #[cfg(not(feature = "nightly"))]
 use allocator_api2::alloc::{AllocError, Allocator};
+#[cfg(feature = "nightly")]
+use core::alloc::{AllocError, Allocator};
 
 #[cfg(all(feature = "nightly", feature = "alloc"))]
 use alloc::alloc::Global;
@@ -366,6 +366,36 @@ where
         self.max_local_alloc
             .fetch_max(max_local_alloc, Ordering::Relaxed);
     }
+
+    /// Returns the approximate number of bytes allocated from this allocator.
+    ///
+    /// This is the sum of the capacity of all previous (fully used) chunks
+    /// plus the bytes used in the current chunk. After warm-up (when
+    /// [`reset`](SyncBlinkAlloc::reset) has been called enough times that a
+    /// single chunk serves all allocations), this value is exact.
+    ///
+    /// Note: [`LocalBlinkAlloc`] proxies allocate their own chunks from
+    /// this allocator, so their chunk allocations (not individual items)
+    /// will be reflected here. Use [`LocalBlinkAlloc::allocated_bytes`]
+    /// to track items allocated through a proxy.
+    pub fn allocated_bytes(&self) -> usize {
+        self.arena.allocated_bytes()
+    }
+
+    /// Returns the total capacity of all chunks in this allocator.
+    ///
+    /// This is the total amount of memory obtained from the underlying
+    /// allocator (excluding chunk headers). After
+    /// [`reset`](SyncBlinkAlloc::reset), only the last chunk is retained, so
+    /// this equals the capacity of that single chunk.
+    ///
+    /// Note: [`LocalBlinkAlloc`] proxies allocate their own chunks from
+    /// this allocator, which contributes to the capacity reported here.
+    /// Use [`LocalBlinkAlloc::total_capacity`] to inspect a proxy's
+    /// own capacity.
+    pub fn total_capacity(&self) -> usize {
+        self.arena.total_capacity()
+    }
 }
 
 unsafe impl<A> Allocator for SyncBlinkAlloc<A>
@@ -536,6 +566,23 @@ where
         unsafe {
             self.arena.reset_unchecked(true, self.shared);
         }
+    }
+
+    /// Returns the approximate number of bytes allocated from this
+    /// thread-local proxy allocator.
+    ///
+    /// See [`SyncBlinkAlloc::allocated_bytes`] for details on the
+    /// approximation. Note that this only tracks allocations made
+    /// through this proxy; the parent [`SyncBlinkAlloc`] tracks the
+    /// proxy's chunk allocations separately.
+    pub fn allocated_bytes(&self) -> usize {
+        self.arena.allocated_bytes()
+    }
+
+    /// Returns the total capacity of all chunks owned by this
+    /// thread-local proxy allocator.
+    pub fn total_capacity(&self) -> usize {
+        self.arena.total_capacity()
     }
 }
 

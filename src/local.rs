@@ -290,6 +290,56 @@ where
         }
     }
 
+    /// Returns the approximate number of bytes allocated from this allocator.
+    ///
+    /// This is the sum of the capacity of all previous (fully used) chunks
+    /// plus the bytes used in the current chunk. After warm-up (when
+    /// [`reset`](BlinkAlloc::reset) has been called enough times that a single
+    /// chunk serves all allocations), this value is exact.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "alloc")] fn main() {
+    /// use blink_alloc::BlinkAlloc;
+    /// let mut blink = BlinkAlloc::new();
+    /// assert_eq!(blink.allocated_bytes(), 0);
+    /// let layout = std::alloc::Layout::new::<u64>();
+    /// blink.allocate(layout).unwrap();
+    /// assert!(blink.allocated_bytes() >= 8);
+    /// blink.reset();
+    /// assert_eq!(blink.allocated_bytes(), 0);
+    /// # }
+    /// # #[cfg(not(feature = "alloc"))] fn main() {}
+    /// ```
+    pub fn allocated_bytes(&self) -> usize {
+        self.arena.allocated_bytes()
+    }
+
+    /// Returns the total capacity of all chunks in this allocator.
+    ///
+    /// This is the total amount of memory obtained from the underlying
+    /// allocator (excluding chunk headers). After
+    /// [`reset`](BlinkAlloc::reset), only the last chunk is retained, so
+    /// this equals the capacity of that single chunk.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "alloc")] fn main() {
+    /// use blink_alloc::BlinkAlloc;
+    /// let mut blink = BlinkAlloc::new();
+    /// assert_eq!(blink.total_capacity(), 0);
+    /// let layout = std::alloc::Layout::new::<u64>();
+    /// blink.allocate(layout).unwrap();
+    /// assert!(blink.total_capacity() >= 8);
+    /// # }
+    /// # #[cfg(not(feature = "alloc"))] fn main() {}
+    /// ```
+    pub fn total_capacity(&self) -> usize {
+        self.arena.total_capacity()
+    }
+
     /// Unwrap this allocator, returning the underlying allocator.
     /// Leaks allocated chunks.
     ///

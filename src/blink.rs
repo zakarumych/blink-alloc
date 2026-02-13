@@ -8,10 +8,10 @@ use core::{
     ptr::{self, NonNull},
 };
 
-#[cfg(all(feature = "nightly",feature = "alloc"))]
+#[cfg(all(feature = "nightly", feature = "alloc"))]
 use alloc::alloc::Global;
 
-#[cfg(all(not(feature = "nightly"),feature = "alloc"))]
+#[cfg(all(not(feature = "nightly"), feature = "alloc"))]
 use allocator_api2::alloc::Global;
 
 use crate::{
